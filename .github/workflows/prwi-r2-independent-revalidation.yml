@@ -75,12 +75,54 @@ jobs:
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
           # The frozen resolved-core map intentionally retains the certified
-          # macOS absolute path.  Recreate that path as an ephemeral symlink on
-          # the GitHub-hosted Linux runner; do not modify any candidate bytes.
+          # macOS absolute path.  Build an ephemeral merged compatibility view
+          # from the immutable candidate runtime plus four separately verified
+          # certified fixture-suite dependencies.  Do not modify candidate bytes.
           COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
           COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
+          CORE_COMPAT="$RUNNER_TEMP/prwi-core-compat-a"
+          CORE_SIDECAR="$GITHUB_WORKSPACE/compat/core/fixture-suite-v0.1.9"
+          mkdir -p "$CORE_COMPAT/fixture-suite-v0.1.9"
+          mapfile -d '' -t CORE_ITEMS < <(find "$BUNDLE_ROOT/runtime/ir-root" -mindepth 1 -maxdepth 1 -print0)
+          if [ "${#CORE_ITEMS[@]}" -eq 0 ]; then
+            printf '%s\n' "candidate runtime/ir-root is empty" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+            printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          for CORE_ITEM in "${CORE_ITEMS[@]}"; do
+            ln -s "$CORE_ITEM" "$CORE_COMPAT/$(basename "$CORE_ITEM")"
+          done
+          CORE_DEPENDENCIES=(
+            "semantic-field-policy-v0.1.yaml"
+            "canonical-semantic-serializer-v0.2.py"
+            "validate_fixture_proof_closure-v0.1.9.py"
+            "fixture-suite-v0.1.9-r3-package-certification-receipt.yaml"
+          )
+          CORE_DEPENDENCY_HASHES=(
+            "424bf3b3a9f40b7ee25a88fa758fe074827109c1164896c6cd133162137d306c"
+            "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
+            "98a3c1b70fa206f880a45a74e09d63ef6a6f1030e50fef76e8ddb524ca711fa1"
+            "2149940dfe13c289bfa5978765bbe2ad830ecb327858f5866befccc0913a5fe0"
+          )
+          for INDEX in "${!CORE_DEPENDENCIES[@]}"; do
+            DEPENDENCY="${CORE_DEPENDENCIES[$INDEX]}"
+            SOURCE_PATH="$CORE_SIDECAR/$DEPENDENCY"
+            EXPECTED_HASH="${CORE_DEPENDENCY_HASHES[$INDEX]}"
+            if [ ! -f "$SOURCE_PATH" ]; then
+              printf 'missing certified sidecar dependency: %s\n' "$SOURCE_PATH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              exit 0
+            fi
+            ACTUAL_HASH=$(sha256sum "$SOURCE_PATH" | awk '{print $1}')
+            if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+              printf 'certified sidecar dependency hash mismatch: %s expected=%s actual=%s\n' "$SOURCE_PATH" "$EXPECTED_HASH" "$ACTUAL_HASH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              exit 0
+            fi
+            ln -s "$SOURCE_PATH" "$CORE_COMPAT/fixture-suite-v0.1.9/$DEPENDENCY"
+          done
           sudo mkdir -p "$COMPAT_PARENT"
-          sudo ln -sfn "$BUNDLE_ROOT/runtime/ir-root" "$COMPAT_CORE"
+          sudo ln -sfn "$CORE_COMPAT" "$COMPAT_CORE"
           SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-a"
           mkdir -p "$SOURCE_COMPAT"
           mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
@@ -96,10 +138,11 @@ jobs:
             echo "compat_target=$(readlink -f "$COMPAT_CORE")"
             echo "compat_source_count=${#SOURCE_FILES[@]}"
             echo "compat_source_target=$(readlink -f "$COMPAT_PARENT/已完成/宁德时代/来源包")"
-            sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py"
+            for DEPENDENCY in "${CORE_DEPENDENCIES[@]}"; do
+              sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/$DEPENDENCY"
+            done
             find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
           } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
-          test "$(sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py" | awk '{print $1}')" = "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
           if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \
@@ -148,12 +191,53 @@ jobs:
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
-          # Repoint the same certified absolute path to replay B's independent
-          # fresh extraction.  This changes only ephemeral runner state.
+          # Rebuild and repoint the same certified absolute path to replay B's
+          # independent fresh extraction plus the verified sidecar dependencies.
           COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
           COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
+          CORE_COMPAT="$RUNNER_TEMP/prwi-core-compat-b"
+          CORE_SIDECAR="$GITHUB_WORKSPACE/compat/core/fixture-suite-v0.1.9"
+          mkdir -p "$CORE_COMPAT/fixture-suite-v0.1.9"
+          mapfile -d '' -t CORE_ITEMS < <(find "$BUNDLE_ROOT/runtime/ir-root" -mindepth 1 -maxdepth 1 -print0)
+          if [ "${#CORE_ITEMS[@]}" -eq 0 ]; then
+            printf '%s\n' "candidate runtime/ir-root is empty" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+            printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          for CORE_ITEM in "${CORE_ITEMS[@]}"; do
+            ln -s "$CORE_ITEM" "$CORE_COMPAT/$(basename "$CORE_ITEM")"
+          done
+          CORE_DEPENDENCIES=(
+            "semantic-field-policy-v0.1.yaml"
+            "canonical-semantic-serializer-v0.2.py"
+            "validate_fixture_proof_closure-v0.1.9.py"
+            "fixture-suite-v0.1.9-r3-package-certification-receipt.yaml"
+          )
+          CORE_DEPENDENCY_HASHES=(
+            "424bf3b3a9f40b7ee25a88fa758fe074827109c1164896c6cd133162137d306c"
+            "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
+            "98a3c1b70fa206f880a45a74e09d63ef6a6f1030e50fef76e8ddb524ca711fa1"
+            "2149940dfe13c289bfa5978765bbe2ad830ecb327858f5866befccc0913a5fe0"
+          )
+          for INDEX in "${!CORE_DEPENDENCIES[@]}"; do
+            DEPENDENCY="${CORE_DEPENDENCIES[$INDEX]}"
+            SOURCE_PATH="$CORE_SIDECAR/$DEPENDENCY"
+            EXPECTED_HASH="${CORE_DEPENDENCY_HASHES[$INDEX]}"
+            if [ ! -f "$SOURCE_PATH" ]; then
+              printf 'missing certified sidecar dependency: %s\n' "$SOURCE_PATH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              exit 0
+            fi
+            ACTUAL_HASH=$(sha256sum "$SOURCE_PATH" | awk '{print $1}')
+            if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+              printf 'certified sidecar dependency hash mismatch: %s expected=%s actual=%s\n' "$SOURCE_PATH" "$EXPECTED_HASH" "$ACTUAL_HASH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              exit 0
+            fi
+            ln -s "$SOURCE_PATH" "$CORE_COMPAT/fixture-suite-v0.1.9/$DEPENDENCY"
+          done
           sudo mkdir -p "$COMPAT_PARENT"
-          sudo ln -sfn "$BUNDLE_ROOT/runtime/ir-root" "$COMPAT_CORE"
+          sudo ln -sfn "$CORE_COMPAT" "$COMPAT_CORE"
           SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-b"
           mkdir -p "$SOURCE_COMPAT"
           mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
@@ -169,10 +253,11 @@ jobs:
             echo "compat_target=$(readlink -f "$COMPAT_CORE")"
             echo "compat_source_count=${#SOURCE_FILES[@]}"
             echo "compat_source_target=$(readlink -f "$COMPAT_PARENT/已完成/宁德时代/来源包")"
-            sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py"
+            for DEPENDENCY in "${CORE_DEPENDENCIES[@]}"; do
+              sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/$DEPENDENCY"
+            done
             find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
           } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
-          test "$(sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py" | awk '{print $1}')" = "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
           if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \

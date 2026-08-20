@@ -1,0 +1,368 @@
+# =============================================================================
+# Semantic Field Policy v0.1 —— Fixture Suite v0.1.7
+# -----------------------------------------------------------------------------
+# 由 Frozen Schema v0.1.2 字段全集驱动（机器枚举，非手工记忆）。
+# 每一个 Schema 字段必须分类：SEMANTIC / NON_SEMANTIC / CONDITIONAL_SEMANTIC。
+# 禁止 UNCLASSIFIED。语义字段必须登记 verification_owner（REFERENCE /
+# STRUCTURAL_SEMANTIC / ENTAILMENT / BINDING），禁止"语义字段无人负责"。
+#
+# SEMANTIC            ：字段变化可能改变事实含义/期间/状态/有效性/关系/因果
+#                       强度/支持强度/判断边界/决策影响/未知事项/触发器/允许措辞
+# NON_SEMANTIC        ：仅文件路径/生成时间/纯说明 notes/内部导出 metadata/
+#                       运行时信息，且变化不改变对象研究含义（必须 rationale）
+# CONDITIONAL_SEMANTIC：仅特定条件（如 claim_type==DERIVED）下生效
+#
+# 覆盖范围：common_fields + 8 类对象 fields + meta_contract。
+# 校验：semantic-surface-coverage-tests-v0.1.py 机器对比 schema 字段全集 vs 本 policy。
+# =============================================================================
+
+policy_version: v0.1
+schema_binding:
+  schema_version: "0.1.2"
+  note: 字段全集来自 contract.common_fields + contract.object_types.<t>.fields + contract.meta_contract
+
+field_classification:
+  # ---------------- common_fields ----------------
+  common:
+    object_id:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    object_type:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    company:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    as_of_date:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # 判断时点；V012 时间语义
+    period:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # 经济期间；V007/V009
+    object_status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, BINDING]     # 有效性/生命周期（FALSIFIED 等改变语义）
+    supersedes:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]                        # 替代关系
+    created_in_ir:
+      class: NON_SEMANTIC
+      rationale: 内部导出 metadata（记录 IR 创建标记），不改变对象研究含义
+      verification_owner: []
+    notes:
+      class: NON_SEMANTIC
+      rationale: 纯说明性文字，不参与语义认证（SER-007/MUT-SER-001 保持）
+      verification_owner: []
+
+  # ---------------- evidence ----------------
+  evidence:
+    evidence_type:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    source_id:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    source_file:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    available_at:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # 披露日；V012
+    facts:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    fact_atoms:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT, STRUCTURAL_SEMANTIC]  # 承重数字；V011
+    source_location:
+      class: NON_SEMANTIC
+      rationale: 页码/段落定位，纯溯源元数据，不改变研究含义
+      verification_owner: []
+
+  # ---------------- claim ----------------
+  claim:
+    statement:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    claim_type:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]
+    unit:
+      class: CONDITIONAL_SEMANTIC
+      condition: "claim_type == DERIVED and derivation_operation == AGGREGATE_SUM"
+      verification_owner: [STRUCTURAL_SEMANTIC]              # 量纲；V008
+    supporting_evidence:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    derived_from:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # SSC-007
+    derivation_operation:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    conversion_rule:
+      class: CONDITIONAL_SEMANTIC
+      condition: "claim_type == DERIVED and derivation_operation == AGGREGATE_SUM"
+      verification_owner: [STRUCTURAL_SEMANTIC]              # V008 换算规则
+    attribution_subject:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]              # SSC-004 归因主体
+    support_status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]
+    causal_basis:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+
+  # ---------------- relationship ----------------
+  relationship:
+    source_object:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]
+    target_object:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]
+    relation_type:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]
+    relation_statement:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]                       # P0-1 核心：必须进 hash 与 clause
+    source_period:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # V007 时间倒流
+    target_period:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]   # V007
+    causal_basis:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]              # SSC-001
+    support_status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]  # SSC-002
+    aggregation_implied:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+
+  # ---------------- assessment ----------------
+  assessment:
+    statement:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    judgment_type:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]  # 判断类型变化改变语义
+    based_on_claims:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    based_on_relationships:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    support_status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC, ENTAILMENT]
+    causal_basis:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    confidence:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]                       # 判断强度
+    limitations:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]                       # 判断边界
+
+  # ---------------- state ----------------
+  state:
+    topic:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    previous_state:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    current_state:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    current_best_judgment:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    based_on_assessments:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    confidence:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    core_unknowns:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, ENTAILMENT]            # 核心未知引用
+    key_triggers:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    decision_impact:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    allowed_wording:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT, STRUCTURAL_SEMANTIC]  # 允许措辞=判断边界
+
+  # ---------------- unknown ----------------
+  unknown:
+    question:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    why_important:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    affects_states:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    current_evidence:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    missing_evidence:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    resolution_condition:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    importance:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    priority:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    decision_impact:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+
+  # ---------------- trigger ----------------
+  trigger:
+    monitored_metric:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    condition:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    affects_states:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    trigger_action:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    possible_impact:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    trigger_nature:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    falsification_strength:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    observation_status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]              # 观察状态
+
+  # ---------------- finding（Audit Layer）----------------
+  finding:
+    finding_id:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    finding_type:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    company:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    as_of_date:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    canonical_version:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, BINDING]
+    error_target_type:
+      class: SEMANTIC
+      verification_owner: [REFERENCE, STRUCTURAL_SEMANTIC]
+    error_target_id:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    resolved_by_id:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    resolved_by_note:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    error_level:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    error_type:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    error_mechanism:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    error_description:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    why_wrong:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]                       # SSC-003 内部一致性
+    severity:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    machine_detectable:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    proposed_detector:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]
+    revised_before:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    revised_after:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]                       # SSC-003
+    status:
+      class: SEMANTIC
+      verification_owner: [STRUCTURAL_SEMANTIC]              # CLOSED/OPEN
+
+  # ---------------- meta ----------------
+  meta:
+    ir_schema_version:
+      class: SEMANTIC
+      verification_owner: [BINDING]
+    ir_spec_version:
+      class: SEMANTIC
+      verification_owner: [BINDING]
+    file_role:
+      class: NON_SEMANTIC
+      rationale: 文件角色标记（IR_FIXTURE 等），不改变对象研究含义
+      verification_owner: []
+    company:
+      class: SEMANTIC
+      verification_owner: [REFERENCE]
+    snapshot_as_of:
+      class: SEMANTIC
+      verification_owner: [BINDING, STRUCTURAL_SEMANTIC]     # 研究截止日；V012
+    subject:
+      class: SEMANTIC
+      verification_owner: [ENTAILMENT]
+    canonical_source_documents:
+      class: NON_SEMANTIC
+      rationale: 来源文件登记（provenance），仅溯源，不改变研究含义
+      verification_owner: []
+    canonical_truth_version:
+      class: SEMANTIC
+      verification_owner: [BINDING]
+    round_trip_test:
+      class: NON_SEMANTIC
+      rationale: round-trip 报告引用路径，仅索引
+      verification_owner: []
+    scope_note:
+      class: NON_SEMANTIC
+      rationale: 范围说明文字，不参与语义认证
+      verification_owner: []
+
+# 汇总（机器校验时重新计算）
+coverage_expected:
+  schema_field_count: 0        # 由 semantic-surface-coverage-tests 机器计算
+  unclassified_field_count: 0
+  unknown_policy_field_count: 0
