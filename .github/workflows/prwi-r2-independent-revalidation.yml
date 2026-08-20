@@ -74,6 +74,32 @@ jobs:
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
+          # The frozen resolved-core map intentionally retains the certified
+          # macOS absolute path.  Recreate that path as an ephemeral symlink on
+          # the GitHub-hosted Linux runner; do not modify any candidate bytes.
+          COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
+          COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
+          sudo mkdir -p "$COMPAT_PARENT"
+          sudo ln -sfn "$BUNDLE_ROOT/runtime/ir-root" "$COMPAT_CORE"
+          SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-a"
+          mkdir -p "$SOURCE_COMPAT"
+          mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
+          test "${#SOURCE_FILES[@]}" -eq 11
+          for SOURCE_FILE in "${SOURCE_FILES[@]}"; do
+            ln -s "$SOURCE_FILE" "$SOURCE_COMPAT/$(basename "$SOURCE_FILE")"
+          done
+          sudo mkdir -p "$COMPAT_PARENT/已完成/宁德时代" "$COMPAT_PARENT/宁德时代"
+          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/已完成/宁德时代/来源包"
+          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/宁德时代/来源包"
+          {
+            echo "compat_core=$COMPAT_CORE"
+            echo "compat_target=$(readlink -f "$COMPAT_CORE")"
+            echo "compat_source_count=${#SOURCE_FILES[@]}"
+            echo "compat_source_target=$(readlink -f "$COMPAT_PARENT/已完成/宁德时代/来源包")"
+            sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py"
+            find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
+          } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
+          test "$(sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py" | awk '{print $1}')" = "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
           if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \
@@ -122,6 +148,31 @@ jobs:
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
+          # Repoint the same certified absolute path to replay B's independent
+          # fresh extraction.  This changes only ephemeral runner state.
+          COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
+          COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
+          sudo mkdir -p "$COMPAT_PARENT"
+          sudo ln -sfn "$BUNDLE_ROOT/runtime/ir-root" "$COMPAT_CORE"
+          SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-b"
+          mkdir -p "$SOURCE_COMPAT"
+          mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
+          test "${#SOURCE_FILES[@]}" -eq 11
+          for SOURCE_FILE in "${SOURCE_FILES[@]}"; do
+            ln -s "$SOURCE_FILE" "$SOURCE_COMPAT/$(basename "$SOURCE_FILE")"
+          done
+          sudo mkdir -p "$COMPAT_PARENT/已完成/宁德时代" "$COMPAT_PARENT/宁德时代"
+          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/已完成/宁德时代/来源包"
+          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/宁德时代/来源包"
+          {
+            echo "compat_core=$COMPAT_CORE"
+            echo "compat_target=$(readlink -f "$COMPAT_CORE")"
+            echo "compat_source_count=${#SOURCE_FILES[@]}"
+            echo "compat_source_target=$(readlink -f "$COMPAT_PARENT/已完成/宁德时代/来源包")"
+            sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py"
+            find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
+          } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
+          test "$(sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/canonical-semantic-serializer-v0.2.py" | awk '{print $1}')" = "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
           if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \
