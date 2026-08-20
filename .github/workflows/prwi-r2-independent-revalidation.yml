@@ -1,0 +1,199 @@
+name: PRWI R2 independent fresh-extract revalidation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prwi-r2-independent-revalidation
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Two serial fresh-extract replays, workers=1
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      BUNDLE_ZIP: input/production-research-workflow-integration-v0.1.2-r2-external-revalidation-bundle-final-candidate-r5.zip
+      EXPECTED_ZIP_SHA256: 40a614b2eb09720ab0314b3c4abb35af49636e68d7aba7dcc0e9de62ed8eafe4
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out the private repository
+        uses: actions/checkout@v4
+
+      - name: Install exact Python runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.12"
+
+      - name: Install declared runtime dependency
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+
+      - name: Record environment and verify immutable input ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          mkdir -p "$EVIDENCE"
+          {
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "runner_name=$RUNNER_NAME"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "image_os=${ImageOS:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            uname -a
+            python --version
+            python -c 'import yaml; print("PyYAML=" + yaml.__version__)'
+          } > "$EVIDENCE/environment.txt"
+          test -f "$BUNDLE_ZIP"
+          printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$BUNDLE_ZIP" | sha256sum -c - | tee "$EVIDENCE/input-zip-verification.txt"
+          sha256sum "$BUNDLE_ZIP" > "$EVIDENCE/input-zip-sha256.txt"
+
+      - name: Fresh extract and replay A
+        shell: bash
+        run: |
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          RUN_EVIDENCE="$EVIDENCE/run-a"
+          EXTRACT="$RUNNER_TEMP/prwi-extract-a"
+          WORK="$RUNNER_TEMP/prwi-work-a"
+          mkdir -p "$EXTRACT" "$RUN_EVIDENCE"
+          unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
+          mapfile -t ROOTS < <(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print)
+          if [ "${#ROOTS[@]}" -ne 1 ]; then
+            printf '%s\n' "fresh extraction must contain exactly one top-level directory" > "$RUN_EVIDENCE/launch-error.txt"
+            printf '%s\n' 97 > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          BUNDLE_ROOT="${ROOTS[0]}"
+          python "$BUNDLE_ROOT/tools/environment-preflight.py" \
+            --bundle-root "$BUNDLE_ROOT" \
+            --workdir "$WORK" \
+            --out "$RUN_EVIDENCE/environment-preflight.yaml" \
+            > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"
+          PREFLIGHT_RC=$?
+          printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
+          if [ "$PREFLIGHT_RC" -ne 0 ]; then
+            printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
+            --bundle-root "$BUNDLE_ROOT" \
+            --workdir "$WORK" \
+            --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
+            --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
+            --workers 1 \
+            --timeout-seconds 3600 \
+            > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"
+          RUN_RC=$?
+          printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+          exit 0
+
+      - name: Fresh extract and replay B
+        shell: bash
+        run: |
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          RUN_EVIDENCE="$EVIDENCE/run-b"
+          EXTRACT="$RUNNER_TEMP/prwi-extract-b"
+          WORK="$RUNNER_TEMP/prwi-work-b"
+          mkdir -p "$EXTRACT" "$RUN_EVIDENCE"
+          unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
+          mapfile -t ROOTS < <(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print)
+          if [ "${#ROOTS[@]}" -ne 1 ]; then
+            printf '%s\n' "fresh extraction must contain exactly one top-level directory" > "$RUN_EVIDENCE/launch-error.txt"
+            printf '%s\n' 97 > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          BUNDLE_ROOT="${ROOTS[0]}"
+          python "$BUNDLE_ROOT/tools/environment-preflight.py" \
+            --bundle-root "$BUNDLE_ROOT" \
+            --workdir "$WORK" \
+            --out "$RUN_EVIDENCE/environment-preflight.yaml" \
+            > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"
+          PREFLIGHT_RC=$?
+          printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
+          if [ "$PREFLIGHT_RC" -ne 0 ]; then
+            printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
+          python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
+            --bundle-root "$BUNDLE_ROOT" \
+            --workdir "$WORK" \
+            --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
+            --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
+            --workers 1 \
+            --timeout-seconds 3600 \
+            > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"
+          RUN_RC=$?
+          printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+          exit 0
+
+      - name: Verify delivery structure and negative controls
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          STRUCTURE_EVIDENCE="$EVIDENCE/structure-verification"
+          mkdir -p "$STRUCTURE_EVIDENCE"
+          ROOT=$(find "$RUNNER_TEMP/prwi-extract-a" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
+          if [ -z "$ROOT" ]; then
+            printf '%s\n' 98 > "$STRUCTURE_EVIDENCE/return-code.txt"
+            exit 0
+          fi
+          python "$ROOT/tools/verify-optimized-r2-candidate.py" \
+            --bundle-root "$ROOT" \
+            --out "$STRUCTURE_EVIDENCE/result.yaml" \
+            > "$STRUCTURE_EVIDENCE/stdout.log" 2> "$STRUCTURE_EVIDENCE/stderr.log"
+          printf '%s\n' "$?" > "$STRUCTURE_EVIDENCE/return-code.txt"
+          exit 0
+
+      - name: Independent postcheck and evidence collection
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          python tools/independent_postcheck.py \
+            --work-a "$RUNNER_TEMP/prwi-work-a" \
+            --work-b "$RUNNER_TEMP/prwi-work-b" \
+            --result-a "$EVIDENCE/run-a/optimized-r2-result.yaml" \
+            --result-b "$EVIDENCE/run-b/optimized-r2-result.yaml" \
+            --evidence-dir "$EVIDENCE" \
+            --out "$EVIDENCE/independent-external-revalidation-result.yaml" \
+            > "$EVIDENCE/postcheck.stdout.log" 2> "$EVIDENCE/postcheck.stderr.log"
+          printf '%s\n' "$?" > "$EVIDENCE/postcheck-return-code.txt"
+          {
+            echo "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$EVIDENCE/environment.txt"
+          (
+            cd "$EVIDENCE"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+          exit 0
+
+      - name: Upload receipts, diagnostics, hashes, and conclusion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prwi-r2-independent-revalidation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prwi-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Apply fail-closed final gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          RC_FILE="$RUNNER_TEMP/prwi-evidence/postcheck-return-code.txt"
+          test -f "$RC_FILE"
+          test "$(tr -d '[:space:]' < "$RC_FILE")" = "0"
