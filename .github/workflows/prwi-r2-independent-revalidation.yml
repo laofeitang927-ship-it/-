@@ -29,8 +29,8 @@ jobs:
         with:
           python-version: "3.13.12"
 
-      - name: Install declared runtime dependency
-        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+      - name: Install exact runtime dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML==6.0.3" "pypdf==6.14.2"
 
       - name: Record environment and verify immutable input ZIP
         shell: bash
@@ -50,6 +50,7 @@ jobs:
             uname -a
             python --version
             python -c 'import yaml; print("PyYAML=" + yaml.__version__)'
+            python -c 'import pypdf; print("pypdf=" + pypdf.__version__)'
           } > "$EVIDENCE/environment.txt"
           test -f "$BUNDLE_ZIP"
           printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$BUNDLE_ZIP" | sha256sum -c - | tee "$EVIDENCE/input-zip-verification.txt"
@@ -58,6 +59,7 @@ jobs:
       - name: Fresh extract and replay A
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
           RUN_EVIDENCE="$EVIDENCE/run-a"
@@ -72,32 +74,40 @@ jobs:
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
-          python "$BUNDLE_ROOT/tools/environment-preflight.py" \
-            --bundle-root "$BUNDLE_ROOT" \
-            --workdir "$WORK" \
-            --out "$RUN_EVIDENCE/environment-preflight.yaml" \
-            > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"
-          PREFLIGHT_RC=$?
+          if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
+              --bundle-root "$BUNDLE_ROOT" \
+              --workdir "$WORK" \
+              --out "$RUN_EVIDENCE/environment-preflight.yaml" \
+              > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"; then
+            PREFLIGHT_RC=0
+          else
+            PREFLIGHT_RC=$?
+          fi
           printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
           if [ "$PREFLIGHT_RC" -ne 0 ]; then
             printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
             exit 0
           fi
-          python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
-            --bundle-root "$BUNDLE_ROOT" \
-            --workdir "$WORK" \
-            --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
-            --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
-            --workers 1 \
-            --timeout-seconds 3600 \
-            > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"
-          RUN_RC=$?
+          if python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
+              --bundle-root "$BUNDLE_ROOT" \
+              --workdir "$WORK" \
+              --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
+              --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
+              --workers 1 \
+              --timeout-seconds 3600 \
+              > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"; then
+            RUN_RC=0
+          else
+            RUN_RC=$?
+          fi
           printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
           exit 0
 
       - name: Fresh extract and replay B
+        if: always()
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
           RUN_EVIDENCE="$EVIDENCE/run-b"
@@ -112,26 +122,32 @@ jobs:
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
-          python "$BUNDLE_ROOT/tools/environment-preflight.py" \
-            --bundle-root "$BUNDLE_ROOT" \
-            --workdir "$WORK" \
-            --out "$RUN_EVIDENCE/environment-preflight.yaml" \
-            > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"
-          PREFLIGHT_RC=$?
+          if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
+              --bundle-root "$BUNDLE_ROOT" \
+              --workdir "$WORK" \
+              --out "$RUN_EVIDENCE/environment-preflight.yaml" \
+              > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"; then
+            PREFLIGHT_RC=0
+          else
+            PREFLIGHT_RC=$?
+          fi
           printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
           if [ "$PREFLIGHT_RC" -ne 0 ]; then
             printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
             exit 0
           fi
-          python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
-            --bundle-root "$BUNDLE_ROOT" \
-            --workdir "$WORK" \
-            --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
-            --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
-            --workers 1 \
-            --timeout-seconds 3600 \
-            > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"
-          RUN_RC=$?
+          if python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
+              --bundle-root "$BUNDLE_ROOT" \
+              --workdir "$WORK" \
+              --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
+              --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
+              --workers 1 \
+              --timeout-seconds 3600 \
+              > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"; then
+            RUN_RC=0
+          else
+            RUN_RC=$?
+          fi
           printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
           exit 0
 
@@ -139,6 +155,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
           STRUCTURE_EVIDENCE="$EVIDENCE/structure-verification"
@@ -148,28 +165,70 @@ jobs:
             printf '%s\n' 98 > "$STRUCTURE_EVIDENCE/return-code.txt"
             exit 0
           fi
-          python "$ROOT/tools/verify-optimized-r2-candidate.py" \
-            --bundle-root "$ROOT" \
-            --out "$STRUCTURE_EVIDENCE/result.yaml" \
-            > "$STRUCTURE_EVIDENCE/stdout.log" 2> "$STRUCTURE_EVIDENCE/stderr.log"
-          printf '%s\n' "$?" > "$STRUCTURE_EVIDENCE/return-code.txt"
+          if python "$ROOT/tools/verify-optimized-r2-candidate.py" \
+              --bundle-root "$ROOT" \
+              --out "$STRUCTURE_EVIDENCE/result.yaml" \
+              > "$STRUCTURE_EVIDENCE/stdout.log" 2> "$STRUCTURE_EVIDENCE/stderr.log"; then
+            STRUCTURE_RC=0
+          else
+            STRUCTURE_RC=$?
+          fi
+          printf '%s\n' "$STRUCTURE_RC" > "$STRUCTURE_EVIDENCE/return-code.txt"
           exit 0
 
       - name: Independent postcheck and evidence collection
         if: always()
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
-          python tools/independent_postcheck.py \
-            --work-a "$RUNNER_TEMP/prwi-work-a" \
-            --work-b "$RUNNER_TEMP/prwi-work-b" \
-            --result-a "$EVIDENCE/run-a/optimized-r2-result.yaml" \
-            --result-b "$EVIDENCE/run-b/optimized-r2-result.yaml" \
-            --evidence-dir "$EVIDENCE" \
-            --out "$EVIDENCE/independent-external-revalidation-result.yaml" \
-            > "$EVIDENCE/postcheck.stdout.log" 2> "$EVIDENCE/postcheck.stderr.log"
-          printf '%s\n' "$?" > "$EVIDENCE/postcheck-return-code.txt"
+          if python tools/independent_postcheck.py \
+              --work-a "$RUNNER_TEMP/prwi-work-a" \
+              --work-b "$RUNNER_TEMP/prwi-work-b" \
+              --result-a "$EVIDENCE/run-a/optimized-r2-result.yaml" \
+              --result-b "$EVIDENCE/run-b/optimized-r2-result.yaml" \
+              --evidence-dir "$EVIDENCE" \
+              --out "$EVIDENCE/independent-external-revalidation-result.yaml" \
+              > "$EVIDENCE/postcheck.stdout.log" 2> "$EVIDENCE/postcheck.stderr.log"; then
+            POSTCHECK_RC=0
+          else
+            POSTCHECK_RC=$?
+          fi
+          printf '%s\n' "$POSTCHECK_RC" > "$EVIDENCE/postcheck-return-code.txt"
+          exit 0
+
+      - name: Archive complete A and B diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          for LABEL in a b; do
+            WORK="$RUNNER_TEMP/prwi-work-$LABEL"
+            RUN_EVIDENCE="$EVIDENCE/run-$LABEL"
+            mkdir -p "$RUN_EVIDENCE"
+            if [ -d "$WORK" ]; then
+              if tar -C "$RUNNER_TEMP" -czf "$RUN_EVIDENCE/full-workdir.tar.gz" "prwi-work-$LABEL"; then
+                ARCHIVE_RC=0
+              else
+                ARCHIVE_RC=$?
+              fi
+            else
+              ARCHIVE_RC=99
+              printf '%s\n' "work directory missing: $WORK" > "$RUN_EVIDENCE/full-workdir-archive-error.txt"
+            fi
+            printf '%s\n' "$ARCHIVE_RC" > "$RUN_EVIDENCE/full-workdir-archive-return-code.txt"
+          done
+          exit 0
+
+      - name: Finalize evidence hashes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
           {
             echo "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$EVIDENCE/environment.txt"

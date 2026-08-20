@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent fail-closed postcheck for two PRWI r5 fresh-extract replays."""
+"""Independent fail-closed postcheck for two PRWI r5 fresh-extract replays (kit v3)."""
 from __future__ import annotations
 
 import argparse
@@ -37,6 +37,13 @@ MUTATION_EXPECTED = {
     "REAL_PRODUCTION_MUTATION_FAIL_COUNT": 0,
     "SCAFFOLD_ONLY_TEST_COUNT": 0,
 }
+PREEXECUTION_STOP_CASES = {
+    "mut001-fake-bridge",
+    "mut002-drift",
+    "r1-mut001-wrong-layer",
+    "r1-mut002-reader-wp",
+}
+EXPECTED_CURRENT_RUN_RECEIPT_COUNT = 14
 
 
 def load_yaml(path: Path) -> Any:
@@ -94,8 +101,19 @@ def canonical_projection(work: Path, gates: dict[str, Any], run_id: str | None) 
     c01_root = work / "replay/mutation-workdir/mut008-gap-request"
     before_path = scoped_file(c01_root, "ir-gap-before-state-v0.1.yaml", run_id)
     after_path = scoped_file(c01_root, "ir-gap-after-state-v0.1.yaml", run_id)
-    before = load_yaml(before_path) if before_path else {}
-    after = load_yaml(after_path) if after_path else {}
+    before_document = load_yaml(before_path) if before_path else {}
+    after_document = load_yaml(after_path) if after_path else {}
+
+    def single_state(document: Any, root_key: str, label: str) -> dict[str, Any]:
+        body = document.get(root_key, document) if isinstance(document, dict) else {}
+        states = body.get("states", []) if isinstance(body, dict) else []
+        if not isinstance(states, list) or len(states) != 1 or not isinstance(states[0], dict):
+            failures.append(f"C01_{label}_STATE_COUNT_NOT_ONE")
+            return {}
+        return states[0]
+
+    before = single_state(before_document, "ir_gap_before_state", "BEFORE")
+    after = single_state(after_document, "ir_gap_after_state", "AFTER")
     before_identity = before.get("knowledge_identity", {}) if isinstance(before, dict) else {}
     after_identity = after.get("knowledge_identity", {}) if isinstance(after, dict) else {}
 
@@ -171,8 +189,10 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
     replay = work / "replay"
     result_paths = sorted(replay.glob("mutation-workdir/*/result.yaml")) if replay.is_dir() else []
     case_ids: set[str] = set()
+    case_execution_identities: set[str] = set()
     case_rows: list[dict[str, Any]] = []
     for result_path in result_paths:
+        case_directory = result_path.parent.name
         try:
             document = load_yaml(result_path)
             result = document.get("result", document) if isinstance(document, dict) else {}
@@ -181,14 +201,29 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
             run_id = None
             failures.append(f"CASE_RESULT_PARSE_ERROR:{result_path.name}:{type(exc).__name__}")
         if not isinstance(run_id, str) or not run_id:
-            failures.append("CASE_RESULT_MISSING_EXECUTION_ID:" + result_path.relative_to(work).as_posix())
+            run_id = None
+            if case_directory not in PREEXECUTION_STOP_CASES:
+                failures.append("CASE_RESULT_MISSING_EXECUTION_ID:" + result_path.relative_to(work).as_posix())
+            execution_identity = "PREEXECUTION_STOP:" + case_directory
         else:
             case_ids.add(run_id)
-        case_rows.append({"path": result_path.relative_to(work).as_posix(), "execution_id": run_id})
+            execution_identity = run_id
+        if execution_identity in case_execution_identities:
+            failures.append("CASE_RESULT_DUPLICATE_EXECUTION_IDENTITY:" + execution_identity)
+        case_execution_identities.add(execution_identity)
+        case_rows.append(
+            {
+                "path": result_path.relative_to(work).as_posix(),
+                "case_directory": case_directory,
+                "execution_id": run_id,
+                "execution_identity": execution_identity,
+                "preexecution_stop": case_directory in PREEXECUTION_STOP_CASES,
+            }
+        )
     if len(result_paths) != 19:
         failures.append(f"CURRENT_CASE_RESULT_COUNT:{len(result_paths)}!=19")
-    if len(case_ids) != 19:
-        failures.append(f"CURRENT_CASE_UNIQUE_EXECUTION_ID_COUNT:{len(case_ids)}!=19")
+    if len(case_execution_identities) != 19:
+        failures.append(f"CURRENT_CASE_UNIQUE_EXECUTION_IDENTITY_COUNT:{len(case_execution_identities)}!=19")
 
     receipts = sorted(replay.rglob(RECEIPT_NAME)) if replay.is_dir() else []
     selected: list[Path] = []
@@ -210,6 +245,10 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
             selected.append(receipt)
     if not selected:
         failures.append("NO_CURRENT_RUN_AUDIT_RECEIPTS")
+    if len(selected) != EXPECTED_CURRENT_RUN_RECEIPT_COUNT:
+        failures.append(
+            f"CURRENT_RUN_AUDIT_RECEIPT_COUNT:{len(selected)}!={EXPECTED_CURRENT_RUN_RECEIPT_COUNT}"
+        )
 
     wrapper_rows = {
         row.get("relative_path"): row
@@ -281,8 +320,11 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
         {
             "current_case_result_count": len(result_paths),
             "current_case_unique_execution_id_count": len(case_ids),
+            "current_case_unique_execution_identity_count": len(case_execution_identities),
+            "preexecution_stop_case_count": sum(row["preexecution_stop"] for row in case_rows),
             "case_inventory": case_rows,
             "current_run_receipt_count": len(rows),
+            "expected_current_run_receipt_count": EXPECTED_CURRENT_RUN_RECEIPT_COUNT,
             "excluded_receipts": excluded,
             "EXPECTATION_LEAKAGE_TEST_COUNT": total_leakage,
             "EXPECTATION_LEAKAGE_FALSE_PASS_COUNT": false_pass,

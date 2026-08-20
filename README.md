@@ -1,6 +1,12 @@
-# PRWI v0.1.2-r2 Candidate r5 独立复验（GitHub Actions）
+# PRWI v0.1.2-r2 Candidate r5 独立复验（GitHub Actions，依赖修正版 v3）
 
 本仓库只用于一次独立托管环境复验，不修改候选 ZIP 内的任何 bytes。
+
+## 为什么需要 v3
+
+2026-08-20 的首次 Ubuntu 执行给出 fail-closed 结果：Run A 为 8/19，11 项失败，冻结 IR Validator 对 C01 候选 IR 报告 39 个 blocker。独立诊断确认该次 GitHub 环境只安装了 PyYAML，而冻结编译器读取 PDF 还需要 `pypdf`；缺少该依赖时 PDF 文本读取被降级为空，因而 11 份 Evidence 的 `facts` 为空并触发连锁失败。
+
+v3 不修改 r5 候选 ZIP 的任何 bytes，只在外部执行环境中固定安装 `PyYAML==6.0.3` 和 `pypdf==6.14.2`，然后重新执行两次独立 fresh-extract replay。r5 在本次新运行真正 PASS 前仍不可放行。
 
 ## 你只需要做什么
 
@@ -31,13 +37,15 @@ OPTIMIZED_R2_CANDIDATE_READY: 'YES'
 
 - 校验输入 ZIP SHA-256 必须为 `40a614b2eb09720ab0314b3c4abb35af49636e68d7aba7dcc0e9de62ed8eafe4`。
 - 使用标准 `ubuntu-latest` 全新托管 VM，而不是 `ubuntu-slim`。
-- 使用 CPython `3.13.12` 和 `PyYAML >=6.0,<7`。
+- 使用 CPython `3.13.12`、`PyYAML==6.0.3` 和 `pypdf==6.14.2`，并把三者版本写入环境证据。
 - 串行执行两次独立 fresh extract replay；每次 `workers=1`，child timeout 为 `3600` 秒。
 - 独立核验每次 mutation 19/19、C01 六个 gate 和六类对象证据。
+- 对四个预执行 fail-closed case 使用明确的 `PREEXECUTION_STOP` case identity；其余 15 个真实执行 case 核验 execution id，并要求 14 份应有的 current-run audit receipts。
 - 独立筛选 current-run audit receipts，重算每份 exact-byte SHA-256，并与 wrapper 记录比对。
 - 核验 receipt execution identity、五项 leakage counts、audited-script hashes 和 executable probes。
 - 按 `canonical-semantic-hash-contract.yaml` 的字段与归一化规则生成 canonical semantic projection，并比较 A/B 两次运行的 semantic hash stability。
-- 无论 PASS、FAIL 或内部 3600 秒 timeout，尽量先上传 diagnostics、receipts、结果和 `SHA256SUMS`，最后才令任务 fail-closed。
+- 无论 PASS、FAIL 或内部 3600 秒 timeout，Run B 都会继续执行。
+- A/B 完整工作目录分别归档为 `run-a/full-workdir.tar.gz` 与 `run-b/full-workdir.tar.gz`，再连同精选 receipts、结果和最终 `SHA256SUMS` 一起上传，最后才令任务 fail-closed。
 
 ## 仍然不自动放开的边界
 
@@ -52,4 +60,3 @@ FROZEN_CORE_REOPEN_REQUIRED = NO
 ```
 
 Fixture 2 或 learning compile production integration 需要后续单独授权，不能由本次 replay 自动放开。
-
