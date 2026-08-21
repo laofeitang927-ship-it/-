@@ -10,15 +10,21 @@ concurrency:
   group: prwi-r2-independent-revalidation
   cancel-in-progress: false
 
+env:
+  BUNDLE_ZIP: input/production-research-workflow-integration-v0.1.2-r2-external-revalidation-bundle-final-candidate-r5.zip
+  EXPECTED_ZIP_SHA256: 40a614b2eb09720ab0314b3c4abb35af49636e68d7aba7dcc0e9de62ed8eafe4
+  CHILD_TIMEOUT_SECONDS: "18000"
+  PYTHONUNBUFFERED: "1"
+
 jobs:
   replay:
-    name: Two serial fresh-extract replays, workers=1
+    name: Fresh extract replay ${{ matrix.label }}, workers=1
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      BUNDLE_ZIP: input/production-research-workflow-integration-v0.1.2-r2-external-revalidation-bundle-final-candidate-r5.zip
-      EXPECTED_ZIP_SHA256: 40a614b2eb09720ab0314b3c4abb35af49636e68d7aba7dcc0e9de62ed8eafe4
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [a, b]
 
     steps:
       - name: Check out the private repository
@@ -34,11 +40,14 @@ jobs:
 
       - name: Record environment and verify immutable input ZIP
         shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
+          EVIDENCE="$RUNNER_TEMP/prwi-run-evidence"
           mkdir -p "$EVIDENCE"
           {
+            echo "replay_label=$LABEL"
             echo "github_run_id=$GITHUB_RUN_ID"
             echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
             echo "runner_name=$RUNNER_NAME"
@@ -46,6 +55,8 @@ jobs:
             echo "runner_arch=$RUNNER_ARCH"
             echo "image_os=${ImageOS:-unknown}"
             echo "image_version=${ImageVersion:-unknown}"
+            echo "workers=1"
+            echo "child_timeout_seconds=$CHILD_TIMEOUT_SECONDS"
             echo "started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             uname -a
             python --version
@@ -56,37 +67,38 @@ jobs:
           printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$BUNDLE_ZIP" | sha256sum -c - | tee "$EVIDENCE/input-zip-verification.txt"
           sha256sum "$BUNDLE_ZIP" > "$EVIDENCE/input-zip-sha256.txt"
 
-      - name: Fresh extract and replay A
+      - name: Fresh extract and replay with process-group isolation
         shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
         run: |
           set +e
           set -uo pipefail
-          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
-          RUN_EVIDENCE="$EVIDENCE/run-a"
-          EXTRACT="$RUNNER_TEMP/prwi-extract-a"
-          WORK="$RUNNER_TEMP/prwi-work-a"
-          mkdir -p "$EXTRACT" "$RUN_EVIDENCE"
+          EVIDENCE="$RUNNER_TEMP/prwi-run-evidence"
+          EXTRACT="$RUNNER_TEMP/prwi-extract-$LABEL"
+          WORK="$RUNNER_TEMP/prwi-work-$LABEL"
+          mkdir -p "$EXTRACT" "$EVIDENCE"
           unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
           mapfile -t ROOTS < <(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print)
           if [ "${#ROOTS[@]}" -ne 1 ]; then
-            printf '%s\n' "fresh extraction must contain exactly one top-level directory" > "$RUN_EVIDENCE/launch-error.txt"
-            printf '%s\n' 97 > "$RUN_EVIDENCE/run-return-code.txt"
+            printf '%s\n' "fresh extraction must contain exactly one top-level directory" > "$EVIDENCE/launch-error.txt"
+            printf '%s\n' 97 > "$EVIDENCE/run-return-code.txt"
             exit 0
           fi
           BUNDLE_ROOT="${ROOTS[0]}"
-          # The frozen resolved-core map intentionally retains the certified
-          # macOS absolute path.  Build an ephemeral merged compatibility view
-          # from the immutable candidate runtime plus four separately verified
-          # certified fixture-suite dependencies.  Do not modify candidate bytes.
+
+          # Preserve the immutable candidate. The certified absolute path is
+          # supplied by an ephemeral compatibility view containing candidate
+          # runtime bytes plus four separately hash-verified sidecar files.
           COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
           COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
-          CORE_COMPAT="$RUNNER_TEMP/prwi-core-compat-a"
+          CORE_COMPAT="$RUNNER_TEMP/prwi-core-compat-$LABEL"
           CORE_SIDECAR="$GITHUB_WORKSPACE/compat/core/fixture-suite-v0.1.9"
           mkdir -p "$CORE_COMPAT/fixture-suite-v0.1.9"
           mapfile -d '' -t CORE_ITEMS < <(find "$BUNDLE_ROOT/runtime/ir-root" -mindepth 1 -maxdepth 1 -print0)
           if [ "${#CORE_ITEMS[@]}" -eq 0 ]; then
-            printf '%s\n' "candidate runtime/ir-root is empty" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-            printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+            printf '%s\n' "candidate runtime/ir-root is empty" > "$EVIDENCE/core-compatibility-error.txt"
+            printf '%s\n' 96 > "$EVIDENCE/run-return-code.txt"
             exit 0
           fi
           for CORE_ITEM in "${CORE_ITEMS[@]}"; do
@@ -109,24 +121,29 @@ jobs:
             SOURCE_PATH="$CORE_SIDECAR/$DEPENDENCY"
             EXPECTED_HASH="${CORE_DEPENDENCY_HASHES[$INDEX]}"
             if [ ! -f "$SOURCE_PATH" ]; then
-              printf 'missing certified sidecar dependency: %s\n' "$SOURCE_PATH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              printf 'missing certified sidecar dependency: %s\n' "$SOURCE_PATH" > "$EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$EVIDENCE/run-return-code.txt"
               exit 0
             fi
             ACTUAL_HASH=$(sha256sum "$SOURCE_PATH" | awk '{print $1}')
             if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-              printf 'certified sidecar dependency hash mismatch: %s expected=%s actual=%s\n' "$SOURCE_PATH" "$EXPECTED_HASH" "$ACTUAL_HASH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
+              printf 'certified sidecar dependency hash mismatch: %s expected=%s actual=%s\n' "$SOURCE_PATH" "$EXPECTED_HASH" "$ACTUAL_HASH" > "$EVIDENCE/core-compatibility-error.txt"
+              printf '%s\n' 96 > "$EVIDENCE/run-return-code.txt"
               exit 0
             fi
             ln -s "$SOURCE_PATH" "$CORE_COMPAT/fixture-suite-v0.1.9/$DEPENDENCY"
           done
           sudo mkdir -p "$COMPAT_PARENT"
           sudo ln -sfn "$CORE_COMPAT" "$COMPAT_CORE"
-          SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-a"
+
+          SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-$LABEL"
           mkdir -p "$SOURCE_COMPAT"
           mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
-          test "${#SOURCE_FILES[@]}" -eq 11
+          if [ "${#SOURCE_FILES[@]}" -ne 11 ]; then
+            printf 'source compatibility count mismatch: %s != 11\n' "${#SOURCE_FILES[@]}" > "$EVIDENCE/source-compatibility-error.txt"
+            printf '%s\n' 95 > "$EVIDENCE/run-return-code.txt"
+            exit 0
+          fi
           for SOURCE_FILE in "${SOURCE_FILES[@]}"; do
             ln -s "$SOURCE_FILE" "$SOURCE_COMPAT/$(basename "$SOURCE_FILE")"
           done
@@ -142,152 +159,171 @@ jobs:
               sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/$DEPENDENCY"
             done
             find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
-          } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
+          } > "$EVIDENCE/frozen-core-path-compatibility.txt"
+
           if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \
-              --out "$RUN_EVIDENCE/environment-preflight.yaml" \
-              > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"; then
+              --out "$EVIDENCE/environment-preflight.yaml" \
+              > "$EVIDENCE/preflight.stdout.log" 2> "$EVIDENCE/preflight.stderr.log"; then
             PREFLIGHT_RC=0
           else
             PREFLIGHT_RC=$?
           fi
-          printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
+          printf '%s\n' "$PREFLIGHT_RC" > "$EVIDENCE/preflight-return-code.txt"
           if [ "$PREFLIGHT_RC" -ne 0 ]; then
-            printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+            printf '%s\n' "$PREFLIGHT_RC" > "$EVIDENCE/run-return-code.txt"
             exit 0
           fi
-          if python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
+
+          # The immutable wrapper stops only its direct child on timeout. Run
+          # it in a dedicated session and close the whole process group before
+          # evidence collection so no orphan can keep writing afterward.
+          setsid python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
               --bundle-root "$BUNDLE_ROOT" \
               --workdir "$WORK" \
-              --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
-              --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
+              --out "$EVIDENCE/optimized-r2-result.yaml" \
+              --preflight-out "$EVIDENCE/environment-preflight.yaml" \
               --workers 1 \
-              --timeout-seconds 3600 \
-              > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"; then
-            RUN_RC=0
-          else
-            RUN_RC=$?
+              --timeout-seconds "$CHILD_TIMEOUT_SECONDS" \
+              > "$EVIDENCE/run.stdout.log" 2> "$EVIDENCE/run.stderr.log" &
+          WRAPPER_PID=$!
+          WRAPPER_PGID=$(ps -o pgid= -p "$WRAPPER_PID" | tr -d '[:space:]')
+          printf 'wrapper_pid=%s\nwrapper_pgid=%s\n' "$WRAPPER_PID" "$WRAPPER_PGID" > "$EVIDENCE/process-group.txt"
+          wait "$WRAPPER_PID"
+          RUN_RC=$?
+          CLEANUP_TERM_SENT=false
+          CLEANUP_KILL_SENT=false
+          if [ -n "$WRAPPER_PGID" ] && kill -0 -- "-$WRAPPER_PGID" 2>/dev/null; then
+            CLEANUP_TERM_SENT=true
+            kill -TERM -- "-$WRAPPER_PGID" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+              kill -0 -- "-$WRAPPER_PGID" 2>/dev/null || break
+              sleep 1
+            done
           fi
-          printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+          if [ -n "$WRAPPER_PGID" ] && kill -0 -- "-$WRAPPER_PGID" 2>/dev/null; then
+            CLEANUP_KILL_SENT=true
+            kill -KILL -- "-$WRAPPER_PGID" 2>/dev/null || true
+          fi
+          printf 'cleanup_term_sent=%s\ncleanup_kill_sent=%s\n' "$CLEANUP_TERM_SENT" "$CLEANUP_KILL_SENT" >> "$EVIDENCE/process-group.txt"
+          printf '%s\n' "$RUN_RC" > "$EVIDENCE/run-return-code.txt"
           exit 0
 
-      - name: Fresh extract and replay B
+      - name: Archive complete replay diagnostics
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          set +e
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-run-evidence"
+          WORK="$RUNNER_TEMP/prwi-work-$LABEL"
+          mkdir -p "$EVIDENCE"
+          if [ -d "$WORK" ]; then
+            if tar -C "$RUNNER_TEMP" -czf "$EVIDENCE/full-workdir.tar.gz" "prwi-work-$LABEL"; then
+              ARCHIVE_RC=0
+            else
+              ARCHIVE_RC=$?
+            fi
+          else
+            ARCHIVE_RC=99
+            printf '%s\n' "work directory missing: $WORK" > "$EVIDENCE/full-workdir-archive-error.txt"
+          fi
+          printf '%s\n' "$ARCHIVE_RC" > "$EVIDENCE/full-workdir-archive-return-code.txt"
+          exit 0
+
+      - name: Finalize replay evidence hashes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/prwi-run-evidence"
+          mkdir -p "$EVIDENCE"
+          echo "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$EVIDENCE/environment.txt"
+          (
+            cd "$EVIDENCE"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+
+      - name: Upload replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prwi-r2-run-${{ matrix.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prwi-run-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  conclude:
+    name: Independent receipts and cross-run hash conclusion
+    needs: replay
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the private repository
+        uses: actions/checkout@v4
+
+      - name: Install exact Python runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.12"
+
+      - name: Install exact runtime dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML==6.0.3" "pypdf==6.14.2"
+
+      - name: Download replay A evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: prwi-r2-run-a-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/download-a
+
+      - name: Download replay B evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: prwi-r2-run-b-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/download-b
+
+      - name: Assemble independent evidence and workdirs
         if: always()
         shell: bash
         run: |
           set +e
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
-          RUN_EVIDENCE="$EVIDENCE/run-b"
-          EXTRACT="$RUNNER_TEMP/prwi-extract-b"
-          WORK="$RUNNER_TEMP/prwi-work-b"
-          mkdir -p "$EXTRACT" "$RUN_EVIDENCE"
-          unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
-          mapfile -t ROOTS < <(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print)
-          if [ "${#ROOTS[@]}" -ne 1 ]; then
-            printf '%s\n' "fresh extraction must contain exactly one top-level directory" > "$RUN_EVIDENCE/launch-error.txt"
-            printf '%s\n' 97 > "$RUN_EVIDENCE/run-return-code.txt"
-            exit 0
-          fi
-          BUNDLE_ROOT="${ROOTS[0]}"
-          # Rebuild and repoint the same certified absolute path to replay B's
-          # independent fresh extraction plus the verified sidecar dependencies.
-          COMPAT_PARENT="/Users/mingkun/WorkBuddy/20260429002653"
-          COMPAT_CORE="$COMPAT_PARENT/规范研究中间表示-v0.1.2"
-          CORE_COMPAT="$RUNNER_TEMP/prwi-core-compat-b"
-          CORE_SIDECAR="$GITHUB_WORKSPACE/compat/core/fixture-suite-v0.1.9"
-          mkdir -p "$CORE_COMPAT/fixture-suite-v0.1.9"
-          mapfile -d '' -t CORE_ITEMS < <(find "$BUNDLE_ROOT/runtime/ir-root" -mindepth 1 -maxdepth 1 -print0)
-          if [ "${#CORE_ITEMS[@]}" -eq 0 ]; then
-            printf '%s\n' "candidate runtime/ir-root is empty" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-            printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
-            exit 0
-          fi
-          for CORE_ITEM in "${CORE_ITEMS[@]}"; do
-            ln -s "$CORE_ITEM" "$CORE_COMPAT/$(basename "$CORE_ITEM")"
-          done
-          CORE_DEPENDENCIES=(
-            "semantic-field-policy-v0.1.yaml"
-            "canonical-semantic-serializer-v0.2.py"
-            "validate_fixture_proof_closure-v0.1.9.py"
-            "fixture-suite-v0.1.9-r3-package-certification-receipt.yaml"
-          )
-          CORE_DEPENDENCY_HASHES=(
-            "424bf3b3a9f40b7ee25a88fa758fe074827109c1164896c6cd133162137d306c"
-            "be37552904e00645ccaa5c5059b4a1cc2fc2e0e987cf0deda9749c846ce14dcf"
-            "98a3c1b70fa206f880a45a74e09d63ef6a6f1030e50fef76e8ddb524ca711fa1"
-            "2149940dfe13c289bfa5978765bbe2ad830ecb327858f5866befccc0913a5fe0"
-          )
-          for INDEX in "${!CORE_DEPENDENCIES[@]}"; do
-            DEPENDENCY="${CORE_DEPENDENCIES[$INDEX]}"
-            SOURCE_PATH="$CORE_SIDECAR/$DEPENDENCY"
-            EXPECTED_HASH="${CORE_DEPENDENCY_HASHES[$INDEX]}"
-            if [ ! -f "$SOURCE_PATH" ]; then
-              printf 'missing certified sidecar dependency: %s\n' "$SOURCE_PATH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
-              exit 0
+          mkdir -p "$EVIDENCE/run-a" "$EVIDENCE/run-b"
+          for LABEL in a b; do
+            DOWNLOADED="$RUNNER_TEMP/download-$LABEL"
+            RUN_EVIDENCE="$EVIDENCE/run-$LABEL"
+            if [ -d "$DOWNLOADED" ]; then
+              cp -a "$DOWNLOADED/." "$RUN_EVIDENCE/"
+            else
+              printf '%s\n' "replay artifact missing: $LABEL" > "$RUN_EVIDENCE/download-error.txt"
             fi
-            ACTUAL_HASH=$(sha256sum "$SOURCE_PATH" | awk '{print $1}')
-            if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-              printf 'certified sidecar dependency hash mismatch: %s expected=%s actual=%s\n' "$SOURCE_PATH" "$EXPECTED_HASH" "$ACTUAL_HASH" > "$RUN_EVIDENCE/core-compatibility-error.txt"
-              printf '%s\n' 96 > "$RUN_EVIDENCE/run-return-code.txt"
-              exit 0
+            if [ -f "$RUN_EVIDENCE/full-workdir.tar.gz" ]; then
+              tar -C "$RUNNER_TEMP" -xzf "$RUN_EVIDENCE/full-workdir.tar.gz"
+              printf '%s\n' "$?" > "$RUN_EVIDENCE/full-workdir-extract-return-code.txt"
+            else
+              printf '%s\n' 99 > "$RUN_EVIDENCE/full-workdir-extract-return-code.txt"
             fi
-            ln -s "$SOURCE_PATH" "$CORE_COMPAT/fixture-suite-v0.1.9/$DEPENDENCY"
           done
-          sudo mkdir -p "$COMPAT_PARENT"
-          sudo ln -sfn "$CORE_COMPAT" "$COMPAT_CORE"
-          SOURCE_COMPAT="$RUNNER_TEMP/prwi-source-compat-b"
-          mkdir -p "$SOURCE_COMPAT"
-          mapfile -d '' -t SOURCE_FILES < <(find "$BUNDLE_ROOT/inputs/source-documents" -mindepth 2 -maxdepth 2 -type f -print0)
-          test "${#SOURCE_FILES[@]}" -eq 11
-          for SOURCE_FILE in "${SOURCE_FILES[@]}"; do
-            ln -s "$SOURCE_FILE" "$SOURCE_COMPAT/$(basename "$SOURCE_FILE")"
-          done
-          sudo mkdir -p "$COMPAT_PARENT/已完成/宁德时代" "$COMPAT_PARENT/宁德时代"
-          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/已完成/宁德时代/来源包"
-          sudo ln -sfn "$SOURCE_COMPAT" "$COMPAT_PARENT/宁德时代/来源包"
           {
-            echo "compat_core=$COMPAT_CORE"
-            echo "compat_target=$(readlink -f "$COMPAT_CORE")"
-            echo "compat_source_count=${#SOURCE_FILES[@]}"
-            echo "compat_source_target=$(readlink -f "$COMPAT_PARENT/已完成/宁德时代/来源包")"
-            for DEPENDENCY in "${CORE_DEPENDENCIES[@]}"; do
-              sha256sum "$COMPAT_CORE/fixture-suite-v0.1.9/$DEPENDENCY"
-            done
-            find -L "$SOURCE_COMPAT" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
-          } > "$RUN_EVIDENCE/frozen-core-path-compatibility.txt"
-          if python "$BUNDLE_ROOT/tools/environment-preflight.py" \
-              --bundle-root "$BUNDLE_ROOT" \
-              --workdir "$WORK" \
-              --out "$RUN_EVIDENCE/environment-preflight.yaml" \
-              > "$RUN_EVIDENCE/preflight.stdout.log" 2> "$RUN_EVIDENCE/preflight.stderr.log"; then
-            PREFLIGHT_RC=0
-          else
-            PREFLIGHT_RC=$?
-          fi
-          printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/preflight-return-code.txt"
-          if [ "$PREFLIGHT_RC" -ne 0 ]; then
-            printf '%s\n' "$PREFLIGHT_RC" > "$RUN_EVIDENCE/run-return-code.txt"
-            exit 0
-          fi
-          if python "$BUNDLE_ROOT/tools/run-optimized-r2-candidate.py" \
-              --bundle-root "$BUNDLE_ROOT" \
-              --workdir "$WORK" \
-              --out "$RUN_EVIDENCE/optimized-r2-result.yaml" \
-              --preflight-out "$RUN_EVIDENCE/environment-preflight.yaml" \
-              --workers 1 \
-              --timeout-seconds 3600 \
-              > "$RUN_EVIDENCE/run.stdout.log" 2> "$RUN_EVIDENCE/run.stderr.log"; then
-            RUN_RC=0
-          else
-            RUN_RC=$?
-          fi
-          printf '%s\n' "$RUN_RC" > "$RUN_EVIDENCE/run-return-code.txt"
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "execution_topology=two independent GitHub-hosted Linux runners"
+            echo "workers_per_runner=1"
+            echo "child_timeout_seconds_per_runner=$CHILD_TIMEOUT_SECONDS"
+            echo "conclusion_started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$EVIDENCE/environment.txt"
           exit 0
 
-      - name: Verify delivery structure and negative controls
+      - name: Verify immutable input and delivery structure
         if: always()
         shell: bash
         run: |
@@ -295,8 +331,16 @@ jobs:
           set -uo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
           STRUCTURE_EVIDENCE="$EVIDENCE/structure-verification"
-          mkdir -p "$STRUCTURE_EVIDENCE"
-          ROOT=$(find "$RUNNER_TEMP/prwi-extract-a" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
+          EXTRACT="$RUNNER_TEMP/prwi-structure-extract"
+          mkdir -p "$STRUCTURE_EVIDENCE" "$EXTRACT"
+          if printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$BUNDLE_ZIP" | sha256sum -c - > "$EVIDENCE/input-zip-verification.txt" 2>&1; then
+            ZIP_RC=0
+          else
+            ZIP_RC=$?
+          fi
+          printf '%s\n' "$ZIP_RC" > "$EVIDENCE/input-zip-verification-return-code.txt"
+          unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
+          ROOT=$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
           if [ -z "$ROOT" ]; then
             printf '%s\n' 98 > "$STRUCTURE_EVIDENCE/return-code.txt"
             exit 0
@@ -312,7 +356,7 @@ jobs:
           printf '%s\n' "$STRUCTURE_RC" > "$STRUCTURE_EVIDENCE/return-code.txt"
           exit 0
 
-      - name: Independent postcheck and evidence collection
+      - name: Independent postcheck
         if: always()
         shell: bash
         run: |
@@ -334,47 +378,19 @@ jobs:
           printf '%s\n' "$POSTCHECK_RC" > "$EVIDENCE/postcheck-return-code.txt"
           exit 0
 
-      - name: Archive complete A and B diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          EVIDENCE="$RUNNER_TEMP/prwi-evidence"
-          for LABEL in a b; do
-            WORK="$RUNNER_TEMP/prwi-work-$LABEL"
-            RUN_EVIDENCE="$EVIDENCE/run-$LABEL"
-            mkdir -p "$RUN_EVIDENCE"
-            if [ -d "$WORK" ]; then
-              if tar -C "$RUNNER_TEMP" -czf "$RUN_EVIDENCE/full-workdir.tar.gz" "prwi-work-$LABEL"; then
-                ARCHIVE_RC=0
-              else
-                ARCHIVE_RC=$?
-              fi
-            else
-              ARCHIVE_RC=99
-              printf '%s\n' "work directory missing: $WORK" > "$RUN_EVIDENCE/full-workdir-archive-error.txt"
-            fi
-            printf '%s\n' "$ARCHIVE_RC" > "$RUN_EVIDENCE/full-workdir-archive-return-code.txt"
-          done
-          exit 0
-
-      - name: Finalize evidence hashes
+      - name: Finalize combined evidence hashes
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           EVIDENCE="$RUNNER_TEMP/prwi-evidence"
-          {
-            echo "finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$EVIDENCE/environment.txt"
+          echo "conclusion_finished_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$EVIDENCE/environment.txt"
           (
             cd "$EVIDENCE"
             find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           )
-          exit 0
 
-      - name: Upload receipts, diagnostics, hashes, and conclusion
+      - name: Upload complete diagnostics, receipts, hashes, and conclusion
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -382,7 +398,7 @@ jobs:
           path: ${{ runner.temp }}/prwi-evidence
           if-no-files-found: error
           retention-days: 30
-          compression-level: 9
+          compression-level: 0
 
       - name: Apply fail-closed final gate
         if: always()

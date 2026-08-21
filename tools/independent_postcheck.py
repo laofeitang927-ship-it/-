@@ -44,6 +44,7 @@ PREEXECUTION_STOP_CASES = {
     "r1-mut002-reader-wp",
 }
 EXPECTED_CURRENT_RUN_RECEIPT_COUNT = 14
+EXPECTED_CHILD_TIMEOUT_SECONDS = 18000
 
 
 def load_yaml(path: Path) -> Any:
@@ -352,8 +353,10 @@ def check_one(label: str, work: Path, result_path: Path, evidence: Path) -> tupl
         failures.append(f"RUN_{label.upper()}_OPTIMIZED_EXECUTION_NOT_READY")
     if optimized.get("supervisor_timed_out") is not False:
         failures.append(f"RUN_{label.upper()}_SUPERVISOR_TIMED_OUT")
-    if optimized.get("timeout_seconds") != 3600:
-        failures.append(f"RUN_{label.upper()}_TIMEOUT_NOT_3600")
+    if optimized.get("timeout_seconds") != EXPECTED_CHILD_TIMEOUT_SECONDS:
+        failures.append(
+            f"RUN_{label.upper()}_TIMEOUT_NOT_{EXPECTED_CHILD_TIMEOUT_SECONDS}"
+        )
 
     legacy = optimized.get("legacy_execution", {})
     if legacy.get("R2_EXECUTION_READY") is not True:
@@ -498,8 +501,10 @@ def main() -> int:
             "LEARNING_COMPILE_PRODUCTION_INTEGRATION_ALLOWED": "NO",
             "FROZEN_CORE_REOPEN_REQUIRED": "NO",
             "workers_per_run": 1,
-            "child_timeout_seconds_per_run": 3600,
-            "serial_fresh_extract_run_count": 2,
+            "child_timeout_seconds_per_run": EXPECTED_CHILD_TIMEOUT_SECONDS,
+            "fresh_extract_run_count": 2,
+            "independent_linux_runner_count": 2,
+            "execution_topology": "two independent GitHub-hosted Linux runners; workers=1 per runner",
             "mutation_requirement": "19/19 for each run",
             "structure_verification_ready": structure_ready,
             "cross_run_semantic_hash_stability": {
