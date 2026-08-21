@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUNDLE_ZIP: input/production-research-workflow-integration-v0.1.2-r2-external-revalidation-bundle-final-candidate-r5.zip
-  EXPECTED_ZIP_SHA256: 40a614b2eb09720ab0314b3c4abb35af49636e68d7aba7dcc0e9de62ed8eafe4
+  BUNDLE_ZIP: input/production-research-workflow-integration-v0.1.2-r2-external-revalidation-bundle-final-candidate-r6.zip
+  EXPECTED_ZIP_SHA256: 1186a1385328a67b443cc7d86bc210873ffa145c7ae0dd2ca53f853544715227
   CHILD_TIMEOUT_SECONDS: "18000"
   PYTHONUNBUFFERED: "1"
 
@@ -340,18 +340,40 @@ jobs:
           fi
           printf '%s\n' "$ZIP_RC" > "$EVIDENCE/input-zip-verification-return-code.txt"
           unzip -q "$BUNDLE_ZIP" -d "$EXTRACT"
-          ROOT=$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
-          if [ -z "$ROOT" ]; then
+          UNZIP_RC=$?
+          printf '%s\n' "$UNZIP_RC" > "$STRUCTURE_EVIDENCE/unzip-return-code.txt"
+          mapfile -t ROOTS < <(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null)
+          printf '%s\n' "${#ROOTS[@]}" > "$STRUCTURE_EVIDENCE/top-level-directory-count.txt"
+          if [ "${#ROOTS[@]}" -ne 1 ]; then
             printf '%s\n' 98 > "$STRUCTURE_EVIDENCE/return-code.txt"
             exit 0
           fi
+          ROOT="${ROOTS[0]}"
+          if python "$ROOT/tools/verify-r6-archive.py" \
+              --zip "$BUNDLE_ZIP" \
+              --bundle-root "$ROOT" \
+              --expect-sha256 "$EXPECTED_ZIP_SHA256" \
+              --out "$STRUCTURE_EVIDENCE/archive-result.json" \
+              > "$STRUCTURE_EVIDENCE/archive.stdout.log" \
+              2> "$STRUCTURE_EVIDENCE/archive.stderr.log"; then
+            ARCHIVE_RC=0
+          else
+            ARCHIVE_RC=$?
+          fi
+          printf '%s\n' "$ARCHIVE_RC" > "$STRUCTURE_EVIDENCE/archive-return-code.txt"
           if python "$ROOT/tools/verify-optimized-r2-candidate.py" \
               --bundle-root "$ROOT" \
               --out "$STRUCTURE_EVIDENCE/result.yaml" \
               > "$STRUCTURE_EVIDENCE/stdout.log" 2> "$STRUCTURE_EVIDENCE/stderr.log"; then
-            STRUCTURE_RC=0
+            BUNDLE_STRUCTURE_RC=0
           else
-            STRUCTURE_RC=$?
+            BUNDLE_STRUCTURE_RC=$?
+          fi
+          printf '%s\n' "$BUNDLE_STRUCTURE_RC" > "$STRUCTURE_EVIDENCE/bundle-return-code.txt"
+          STRUCTURE_RC=0
+          if [ "$ZIP_RC" -ne 0 ] || [ "$UNZIP_RC" -ne 0 ] || \
+             [ "$ARCHIVE_RC" -ne 0 ] || [ "$BUNDLE_STRUCTURE_RC" -ne 0 ]; then
+            STRUCTURE_RC=1
           fi
           printf '%s\n' "$STRUCTURE_RC" > "$STRUCTURE_EVIDENCE/return-code.txt"
           exit 0

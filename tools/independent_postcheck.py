@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent fail-closed postcheck for two PRWI r5 fresh-extract replays (kit v3)."""
+"""Independent fail-closed postcheck for two PRWI r6 fresh-extract replays (kit v3)."""
 from __future__ import annotations
 
 import argparse
@@ -37,14 +37,59 @@ MUTATION_EXPECTED = {
     "REAL_PRODUCTION_MUTATION_FAIL_COUNT": 0,
     "SCAFFOLD_ONLY_TEST_COUNT": 0,
 }
-PREEXECUTION_STOP_CASES = {
-    "mut001-fake-bridge",
-    "mut002-drift",
-    "r1-mut001-wrong-layer",
-    "r1-mut002-reader-wp",
+PREEXECUTION_STOP_CASES: dict[str, dict[str, Any]] = {
+    "mut001-fake-bridge": {
+        "kind": "FROZEN_IDENTITY_REJECTION",
+        "mutation_id": "MUT-PRWI-012-001",
+        "workflow_run_id": "PRWI012-MUT-001",
+        "current_workflow_status": "BLOCKED_FROZEN_BRIDGE_IDENTITY",
+        "observed_gate": "FROZEN_BRIDGE_IDENTITY_READY",
+        "observed_gate_value": "NO",
+        "actual_finding_router_execution": False,
+        "bridge_mismatch_count": 7,
+    },
+    "mut002-drift": {
+        "kind": "FROZEN_IDENTITY_REJECTION",
+        "mutation_id": "MUT-PRWI-012-002",
+        "workflow_run_id": "PRWI012-MUT-002",
+        "current_workflow_status": "BLOCKED_FROZEN_BRIDGE_IDENTITY",
+        "observed_gate": "BRIDGE_IDENTITY_HASH_MISMATCH_COUNT",
+        "observed_gate_value": ">=1",
+        "actual_finding_router_execution": False,
+        "bridge_mismatch_count": 1,
+    },
+    "r1-mut001-wrong-layer": {
+        "kind": "REPAIR_TARGET_CONTRACT_REJECTION",
+        "mutation_id": "MUT-PRWI-012R1-001",
+        "workflow_run_id": "PRWI012-R1-MUT-001",
+        "current_workflow_status": "BLOCKED_REPAIR_TARGET_CONTRACT",
+        "observed_gate": "REPAIR_TARGET_CONTRACT_READY",
+        "observed_gate_value": "NO",
+        "actual_finding_router_execution": True,
+        "target_layer": "IR",
+        "target_artifact": "OPERATING_BRIEF",
+        "finding_id": "R1-MUT-001",
+        "target_relative_path": "04-reader/operating-brief.md",
+    },
+    "r1-mut002-reader-wp": {
+        "kind": "REPAIR_TARGET_CONTRACT_REJECTION",
+        "mutation_id": "MUT-PRWI-012R1-002",
+        "workflow_run_id": "PRWI012-R1-MUT-002",
+        "current_workflow_status": "BLOCKED_REPAIR_TARGET_CONTRACT",
+        "observed_gate": "REPAIR_TARGET_CONTRACT_READY",
+        "observed_gate_value": "NO",
+        "actual_finding_router_execution": True,
+        "target_layer": "READER",
+        "target_artifact": "WORKPAPER",
+        "finding_id": "R1-MUT-002",
+        "target_relative_path": "02-research/research-workpaper.md",
+    },
 }
 EXPECTED_CURRENT_RUN_RECEIPT_COUNT = 14
 EXPECTED_CHILD_TIMEOUT_SECONDS = 18000
+EXPECTED_RAW_CASE_EXECUTION_ID_COUNT = 15
+EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT = 19
+EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT = 4
 
 
 def load_yaml(path: Path) -> Any:
@@ -185,46 +230,439 @@ def copy_evidence(work: Path, evidence: Path, label: str) -> None:
         shutil.copy2(source, target)
 
 
-def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def valid_contract_check(row: Any, expected: dict[str, Any]) -> bool:
+    return (
+        isinstance(row, dict)
+        and row.get("target_layer") == expected["target_layer"]
+        and row.get("target_artifact") == expected["target_artifact"]
+        and row.get("finding_id") == expected["finding_id"]
+        and row.get("layer_known") is True
+        and row.get("LAYER_MISMATCH") is True
+        and row.get("FORBIDDEN_HIT") is True
+        and row.get("READY") is False
+    )
+
+
+def verified_preexecution_identity(
+    work: Path,
+    case_directory: str,
+    result: dict[str, Any],
+    receipt_path: Path,
+    mutation_rows: dict[str, list[dict[str, Any]]],
+    wrong_layer_proofs: list[dict[str, Any]],
+) -> tuple[str | None, dict[str, Any], str | None]:
+    """Independently recover one real ID from an exact sibling stop receipt."""
+    expected = PREEXECUTION_STOP_CASES.get(case_directory)
+    receipt_relative = receipt_path.relative_to(work).as_posix()
+    evidence = {
+        "receipt_relative_path": receipt_relative,
+        "receipt_sha256": sha256(receipt_path) if receipt_path.is_file() else None,
+        "receipt_version": None,
+        "receipt_workflow_run_id": None,
+        "receipt_current_workflow_status": None,
+        "mutation_id": expected.get("mutation_id") if expected else None,
+        "ready": False,
+    }
+    if expected is None:
+        return None, evidence, "CASE_RESULT_MISSING_EXECUTION_ID"
+    if not receipt_path.is_file():
+        return None, evidence, "PRE_EXECUTION_STOP_RECEIPT_MISSING"
+    try:
+        receipt_document = load_yaml(receipt_path)
+    except Exception:
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+    if not isinstance(receipt_document, dict) or set(receipt_document) != {
+        "production_research_workflow_receipt"
+    }:
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+    receipt = receipt_document.get("production_research_workflow_receipt")
+    if not isinstance(receipt, dict):
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+    evidence.update(
+        {
+            "receipt_version": receipt.get("version"),
+            "receipt_workflow_run_id": receipt.get("workflow_run_id"),
+            "receipt_current_workflow_status": receipt.get("current_workflow_status"),
+        }
+    )
+    if receipt.get("workflow_run_id") != expected["workflow_run_id"]:
+        return None, evidence, "PRE_EXECUTION_STOP_IDENTITY_MISMATCH"
+
+    rows = mutation_rows.get(expected["mutation_id"], [])
+    if len(rows) > 1:
+        return None, evidence, "DUPLICATE_MUTATION_EVIDENCE_ROW"
+    if len(rows) != 1:
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+    mutation = rows[0]
+    result_gates = result.get("gates") if isinstance(result.get("gates"), dict) else {}
+    receipt_gates = receipt.get("gates") if isinstance(receipt.get("gates"), dict) else {}
+    observed_value = mutation.get("observed_gate_value")
+    if expected["observed_gate_value"] == ">=1":
+        observed_value_ready = positive_integer(observed_value)
+    else:
+        observed_value_ready = observed_value == expected["observed_gate_value"]
+    common_ready = (
+        receipt.get("version") == "v0.1.2-r1"
+        and receipt.get("current_workflow_status") == expected["current_workflow_status"]
+        and result.get("status") == "FAIL"
+        and result.get("PRODUCTION_RESEARCH_WORKFLOW_INTEGRATION_READY") == "NO"
+        and result_gates.get("PRODUCTION_RESEARCH_WORKFLOW_INTEGRATION_READY") is False
+        and receipt_gates.get("PRODUCTION_RESEARCH_WORKFLOW_INTEGRATION_READY") is False
+        and mutation.get("mutation_id") == expected["mutation_id"]
+        and mutation.get("mutation_type") == expected["mutation_id"]
+        and mutation.get("expected_behavior") == "FAIL"
+        and isinstance(mutation.get("return_code"), int)
+        and not isinstance(mutation.get("return_code"), bool)
+        and mutation.get("return_code") != 0
+        and mutation.get("actual_orchestrator_execution") is True
+        and mutation.get("actual_bridge_execution") is False
+        and mutation.get("actual_finding_router_execution")
+        is expected["actual_finding_router_execution"]
+        and mutation.get("actual_ir_validator_execution") is False
+        and mutation.get("actual_reader_regeneration_execution") is False
+        and mutation.get("required_execution_satisfied") is True
+        and mutation.get("pass") is True
+        and mutation.get("observed_gate") == expected["observed_gate"]
+        and observed_value_ready
+    )
+    if not common_ready:
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+
+    if expected["kind"] == "FROZEN_IDENTITY_REJECTION":
+        identity = receipt.get("frozen_bridge_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        result_mismatch = result_gates.get("BRIDGE_IDENTITY_HASH_MISMATCH_COUNT")
+        identity_mismatch = identity.get("BRIDGE_IDENTITY_HASH_MISMATCH_COUNT")
+        receipt_mismatch = receipt_gates.get("BRIDGE_IDENTITY_HASH_MISMATCH_COUNT")
+        evidence_ready = (
+            result.get("FROZEN_BRIDGE_IDENTITY_READY") == "NO"
+            and result_gates.get("FROZEN_BRIDGE_IDENTITY_READY") is False
+            and identity.get("FROZEN_BRIDGE_IDENTITY_READY") is False
+            and receipt_gates.get("FROZEN_BRIDGE_IDENTITY_READY") is False
+            and positive_integer(result_mismatch)
+            and result_mismatch == expected["bridge_mismatch_count"]
+            and result_mismatch == identity_mismatch == receipt_mismatch
+        )
+    else:
+        audit = receipt.get("repair_target_contract_audit")
+        audit = audit if isinstance(audit, dict) else {}
+        expected_gates = {
+            "FINDING_ROUTER_EXECUTION_COUNT": 1,
+            "REPAIR_TARGET_CONTRACT_READY": False,
+            "REPAIR_TARGET_LAYER_MISMATCH_COUNT": 1,
+            "FORBIDDEN_REPAIR_TARGET_COUNT": 1,
+            "ALL_REPAIR_ACTIONS_MATCH_ROUTER_TARGET_LAYER": False,
+            "REPAIR_ACTOR_EXECUTION_COUNT": 0,
+        }
+        gate_values_ready = all(
+            result_gates.get(key) == value and receipt_gates.get(key) == value
+            for key, value in expected_gates.items()
+        )
+        audit_ready = all(
+            audit.get(key) == value
+            for key, value in expected_gates.items()
+            if key not in {"FINDING_ROUTER_EXECUTION_COUNT", "REPAIR_ACTOR_EXECUTION_COUNT"}
+        )
+        result_checks = result_gates.get("REPAIR_TARGET_CONTRACT_CHECKS")
+        audit_checks = audit.get("contract_checks")
+        receipt_checks = receipt_gates.get("REPAIR_TARGET_CONTRACT_CHECKS")
+        checks_ready = all(
+            isinstance(rows_to_check, list)
+            and len(rows_to_check) == 1
+            and valid_contract_check(rows_to_check[0], expected)
+            for rows_to_check in (result_checks, audit_checks, receipt_checks)
+        )
+        proofs = [
+            row
+            for row in wrong_layer_proofs
+            if isinstance(row, dict) and row.get("mutation_id") == expected["mutation_id"]
+        ]
+        proof_ready = False
+        if len(proofs) == 1:
+            proof = proofs[0]
+            before = proof.get("target_file_hash_before")
+            after = proof.get("target_file_hash_after")
+            proof_ready = (
+                proof.get("STOP_BEFORE_MUTATION") is True
+                and proof.get("STOP_EVIDENCE") == "CONTRACT_GATE_EARLY_RETURN"
+                and proof.get("target_relative_path") == expected["target_relative_path"]
+                and isinstance(before, str)
+                and len(before) == 64
+                and all(character in "0123456789abcdef" for character in before)
+                and before == after
+                and proof.get("REPAIR_ACTOR_EXECUTION_COUNT") == 0
+                and proof.get("WRONG_LAYER_MUTATION_COUNT") == 0
+                and proof.get("TARGET_FILE_HASH_CHANGED_COUNT") == 0
+            )
+        evidence_ready = (
+            result.get("REPAIR_TARGET_CONTRACT_READY") == "NO"
+            and result.get("REPAIR_TARGET_LAYER_MISMATCH_COUNT") == 1
+            and result.get("FORBIDDEN_REPAIR_TARGET_COUNT") == 1
+            and gate_values_ready
+            and audit_ready
+            and checks_ready
+            and proof_ready
+        )
+    if not evidence_ready:
+        return None, evidence, "PRE_EXECUTION_STOP_EVIDENCE_MISMATCH"
+    evidence["ready"] = True
+    return expected["workflow_run_id"], evidence, None
+
+
+def check_receipts(
+    work: Path,
+    legacy_execution: dict[str, Any],
+    wrapper_provenance: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
     failures: list[str] = []
     replay = work / "replay"
     result_paths = sorted(replay.glob("mutation-workdir/*/result.yaml")) if replay.is_dir() else []
     case_ids: set[str] = set()
     case_execution_identities: set[str] = set()
     case_rows: list[dict[str, Any]] = []
+    identity_paths: dict[str, list[str]] = {}
+    inventory_errors: list[dict[str, Any]] = []
+    duplicate_identities: list[dict[str, Any]] = []
+    mutation_rows: dict[str, list[dict[str, Any]]] = {}
+    mutation_result = replay / "mutation-result.yaml"
+    if mutation_result.is_file():
+        try:
+            mutation_body = load_yaml(mutation_result).get(
+                "production_research_workflow_mutation_regression", {}
+            )
+            for mutation_row in mutation_body.get("cases", []):
+                if isinstance(mutation_row, dict) and isinstance(
+                    mutation_row.get("mutation_id"), str
+                ):
+                    mutation_rows.setdefault(mutation_row["mutation_id"], []).append(mutation_row)
+        except Exception as exc:
+            failures.append(f"MUTATION_RESULT_PARSE_ERROR:{type(exc).__name__}")
+    else:
+        failures.append("MUTATION_RESULT_MISSING_FOR_IDENTITY_CLOSURE")
+    wrong_layer_proofs = legacy_execution.get("wrong_layer_proofs", [])
+    if not isinstance(wrong_layer_proofs, list):
+        failures.append("WRONG_LAYER_PROOFS_NOT_A_LIST")
+        wrong_layer_proofs = []
+
     for result_path in result_paths:
         case_directory = result_path.parent.name
+        relative_path = result_path.relative_to(work).as_posix()
+        run_id: str | None = None
+        execution_identity: str | None = None
+        identity_source: str | None = None
+        preexecution_stop = False
+        stop_evidence: dict[str, Any] | None = None
         try:
             document = load_yaml(result_path)
             result = document.get("result", document) if isinstance(document, dict) else {}
+            if not isinstance(result, dict):
+                raise TypeError("result must be a mapping")
             run_id = result.get("workflow_run_id") or result.get("execution_run_id")
+            if not isinstance(run_id, str) or not run_id:
+                run_id = None
+            if case_directory in PREEXECUTION_STOP_CASES:
+                recovered_id, stop_evidence, reason = verified_preexecution_identity(
+                    work,
+                    case_directory,
+                    result,
+                    result_path.parent / "receipt.yaml",
+                    mutation_rows,
+                    wrong_layer_proofs,
+                )
+                if reason:
+                    inventory_errors.append({"relative_path": relative_path, "reason": reason})
+                    failures.append(f"{reason}:{relative_path}")
+                elif run_id is not None and run_id != recovered_id:
+                    reason = "PRE_EXECUTION_STOP_IDENTITY_MISMATCH"
+                    inventory_errors.append({"relative_path": relative_path, "reason": reason})
+                    failures.append(f"{reason}:{relative_path}")
+                else:
+                    execution_identity = recovered_id
+                    preexecution_stop = True
+                    identity_source = (
+                        "RESULT_AND_VERIFIED_PRE_EXECUTION_RECEIPT"
+                        if run_id is not None
+                        else "VERIFIED_PRE_EXECUTION_RECEIPT"
+                    )
+                    if run_id is not None:
+                        case_ids.add(run_id)
+            elif run_id is not None:
+                execution_identity = run_id
+                identity_source = "CASE_RESULT"
+                case_ids.add(run_id)
+            else:
+                reason = "CASE_RESULT_MISSING_EXECUTION_ID"
+                inventory_errors.append({"relative_path": relative_path, "reason": reason})
+                failures.append(f"{reason}:{relative_path}")
         except Exception as exc:
-            run_id = None
-            failures.append(f"CASE_RESULT_PARSE_ERROR:{result_path.name}:{type(exc).__name__}")
-        if not isinstance(run_id, str) or not run_id:
-            run_id = None
-            if case_directory not in PREEXECUTION_STOP_CASES:
-                failures.append("CASE_RESULT_MISSING_EXECUTION_ID:" + result_path.relative_to(work).as_posix())
-            execution_identity = "PREEXECUTION_STOP:" + case_directory
-        else:
-            case_ids.add(run_id)
-            execution_identity = run_id
-        if execution_identity in case_execution_identities:
-            failures.append("CASE_RESULT_DUPLICATE_EXECUTION_IDENTITY:" + execution_identity)
-        case_execution_identities.add(execution_identity)
+            reason = f"CASE_RESULT_PARSE_ERROR:{type(exc).__name__}"
+            inventory_errors.append({"relative_path": relative_path, "reason": reason})
+            failures.append(f"{reason}:{relative_path}")
+        if execution_identity:
+            case_execution_identities.add(execution_identity)
+            identity_paths.setdefault(execution_identity, []).append(relative_path)
         case_rows.append(
             {
-                "path": result_path.relative_to(work).as_posix(),
+                "relative_path": relative_path,
                 "case_directory": case_directory,
-                "execution_id": run_id,
+                "execution_run_id": run_id,
                 "execution_identity": execution_identity,
-                "preexecution_stop": case_directory in PREEXECUTION_STOP_CASES,
+                "execution_identity_source": identity_source,
+                "preexecution_stop": preexecution_stop,
+                "preexecution_stop_evidence": stop_evidence,
             }
         )
+    for execution_identity, relative_paths in sorted(identity_paths.items()):
+        if len(relative_paths) > 1:
+            duplicate = {
+                "execution_run_id": execution_identity,
+                "relative_paths": relative_paths,
+                "reason": "DUPLICATE_CASE_EXECUTION_ID",
+            }
+            duplicate_identities.append(duplicate)
+            inventory_errors.append(duplicate)
+            failures.append("DUPLICATE_CASE_EXECUTION_ID:" + execution_identity)
+
+    observed_preexecution_cases = {
+        row["case_directory"]
+        for row in case_rows
+        if row["case_directory"] in PREEXECUTION_STOP_CASES
+    }
+    if observed_preexecution_cases != set(PREEXECUTION_STOP_CASES):
+        failures.append("PREEXECUTION_STOP_CASE_SET_MISMATCH")
     if len(result_paths) != 19:
         failures.append(f"CURRENT_CASE_RESULT_COUNT:{len(result_paths)}!=19")
-    if len(case_execution_identities) != 19:
-        failures.append(f"CURRENT_CASE_UNIQUE_EXECUTION_IDENTITY_COUNT:{len(case_execution_identities)}!=19")
+    raw_result_id_count = sum(row["execution_run_id"] is not None for row in case_rows)
+    if raw_result_id_count != EXPECTED_RAW_CASE_EXECUTION_ID_COUNT:
+        failures.append(
+            f"CURRENT_CASE_RAW_RESULT_ID_COUNT:{raw_result_id_count}"
+            f"!={EXPECTED_RAW_CASE_EXECUTION_ID_COUNT}"
+        )
+    if len(case_ids) != EXPECTED_RAW_CASE_EXECUTION_ID_COUNT:
+        failures.append(
+            f"CURRENT_CASE_RAW_EXECUTION_ID_COUNT:{len(case_ids)}"
+            f"!={EXPECTED_RAW_CASE_EXECUTION_ID_COUNT}"
+        )
+    if len(case_execution_identities) != EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT:
+        failures.append(
+            f"CURRENT_CASE_UNIQUE_EXECUTION_IDENTITY_COUNT:{len(case_execution_identities)}"
+            f"!={EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT}"
+        )
+    verified_stop_count = sum(row["preexecution_stop"] for row in case_rows)
+    if verified_stop_count != EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT:
+        failures.append(
+            f"VERIFIED_PRE_EXECUTION_STOP_COUNT:{verified_stop_count}"
+            f"!={EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT}"
+        )
+    synthetic_identities = sorted(
+        identity
+        for identity in case_execution_identities
+        if identity.startswith("PREEXECUTION_STOP:")
+    )
+    if synthetic_identities:
+        failures.append("SYNTHETIC_CASE_EXECUTION_IDENTITY_PRESENT")
+
+    expected_wrapper_fields = {
+        "AUDIT_RECEIPT_COUNT": EXPECTED_CURRENT_RUN_RECEIPT_COUNT,
+        "CURRENT_CASE_RECEIPT_COUNT": EXPECTED_CURRENT_RUN_RECEIPT_COUNT,
+        "CURRENT_CASE_EXECUTION_ID_COUNT": EXPECTED_RAW_CASE_EXECUTION_ID_COUNT,
+        "CURRENT_CASE_EXECUTION_IDENTITY_COUNT": EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT,
+        "CURRENT_CASE_UNIQUE_EXECUTION_IDENTITY_COUNT": EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT,
+        "CURRENT_CASE_RESULT_COUNT": EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT,
+        "PREEXECUTION_STOP_CASE_COUNT": EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT,
+        "VERIFIED_PRE_EXECUTION_STOP_COUNT": EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT,
+        "DUPLICATE_CASE_EXECUTION_ID_COUNT": 0,
+        "FULL_RUN_CLOSED": True,
+        "REFERENCE_ANSWER_DEPENDENCY_AUDIT_EXECUTED": True,
+        "EXPECTATION_LEAKAGE_METRIC_MACHINE_DERIVED": True,
+        "EXPECTATION_LEAKAGE_TEST_COUNT": 0,
+        "EXPECTATION_LEAKAGE_FALSE_PASS_COUNT": 0,
+        "AUDIT_RECEIPTS_READY": True,
+    }
+    wrapper_mismatches: list[dict[str, Any]] = []
+    if not isinstance(wrapper_provenance, dict):
+        wrapper_provenance = {}
+    for key, expected_value in expected_wrapper_fields.items():
+        actual_value = wrapper_provenance.get(key)
+        if actual_value != expected_value:
+            wrapper_mismatches.append(
+                {"field": key, "expected": expected_value, "actual": actual_value}
+            )
+            failures.append("WRAPPER_PROVENANCE_FIELD_MISMATCH:" + key)
+    if wrapper_provenance.get("case_inventory_errors") != []:
+        wrapper_mismatches.append(
+            {
+                "field": "case_inventory_errors",
+                "expected": [],
+                "actual": wrapper_provenance.get("case_inventory_errors"),
+            }
+        )
+        failures.append("WRAPPER_CASE_INVENTORY_ERRORS_PRESENT")
+    if wrapper_provenance.get("duplicate_case_execution_ids") != []:
+        wrapper_mismatches.append(
+            {
+                "field": "duplicate_case_execution_ids",
+                "expected": [],
+                "actual": wrapper_provenance.get("duplicate_case_execution_ids"),
+            }
+        )
+        failures.append("WRAPPER_DUPLICATE_CASE_EXECUTION_IDS_PRESENT")
+
+    wrapper_case_rows = {
+        row.get("relative_path"): row
+        for row in wrapper_provenance.get("case_inventory", [])
+        if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
+    }
+    if len(wrapper_case_rows) != EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT:
+        wrapper_mismatches.append(
+            {
+                "field": "case_inventory_count",
+                "expected": EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT,
+                "actual": len(wrapper_case_rows),
+            }
+        )
+        failures.append(
+            f"WRAPPER_CASE_INVENTORY_COUNT:{len(wrapper_case_rows)}"
+            f"!={EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT}"
+        )
+    comparable_keys = (
+        "relative_path",
+        "case_directory",
+        "execution_run_id",
+        "execution_identity",
+        "execution_identity_source",
+        "preexecution_stop",
+    )
+    for case_row in case_rows:
+        relative_path = case_row["relative_path"]
+        wrapper_case_row = wrapper_case_rows.get(relative_path)
+        expected_comparable = {key: case_row.get(key) for key in comparable_keys}
+        actual_comparable = (
+            {key: wrapper_case_row.get(key) for key in comparable_keys}
+            if isinstance(wrapper_case_row, dict)
+            else None
+        )
+        if actual_comparable != expected_comparable:
+            wrapper_mismatches.append(
+                {
+                    "field": "case_inventory:" + relative_path,
+                    "expected": expected_comparable,
+                    "actual": actual_comparable,
+                }
+            )
+            failures.append("WRAPPER_CASE_INVENTORY_MISMATCH:" + relative_path)
+    wrapper_synthetic_identities = sorted(
+        row.get("execution_identity")
+        for row in wrapper_case_rows.values()
+        if isinstance(row.get("execution_identity"), str)
+        and row["execution_identity"].startswith("PREEXECUTION_STOP:")
+    )
+    if wrapper_synthetic_identities:
+        failures.append("WRAPPER_SYNTHETIC_CASE_EXECUTION_IDENTITY_PRESENT")
 
     receipts = sorted(replay.rglob(RECEIPT_NAME)) if replay.is_dir() else []
     selected: list[Path] = []
@@ -256,6 +694,16 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
         for row in wrapper_provenance.get("receipts", [])
         if isinstance(row, dict) and row.get("relative_path")
     }
+    selected_relatives = {receipt.relative_to(work).as_posix() for receipt in selected}
+    if set(wrapper_rows) != selected_relatives:
+        failures.append("WRAPPER_CURRENT_RUN_RECEIPT_INVENTORY_MISMATCH")
+        wrapper_mismatches.append(
+            {
+                "field": "receipts",
+                "expected": sorted(selected_relatives),
+                "actual": sorted(wrapper_rows),
+            }
+        )
     rows: list[dict[str, Any]] = []
     for receipt in selected:
         relative = receipt.relative_to(work).as_posix()
@@ -285,6 +733,10 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
                 script_mismatch.append({"path": script, "expected": expected, "actual": actual})
         wrapper_row = wrapper_rows.get(relative, {})
         wrapper_hash_ready = wrapper_row.get("receipt_sha256") == digest
+        wrapper_receipt_row_ready = (
+            wrapper_row.get("execution_run_id") == body.get("execution_run_id")
+            and wrapper_row.get("ready") is True
+        )
         ready = (
             parsed
             and body.get("version") == "v0.3.2-r1"
@@ -295,6 +747,7 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
             and probes_ready
             and scripts_ready
             and wrapper_hash_ready
+            and wrapper_receipt_row_ready
         )
         if not ready:
             failures.append("CURRENT_RUN_AUDIT_RECEIPT_NOT_READY:" + relative)
@@ -304,6 +757,7 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
                 "execution_run_id": body.get("execution_run_id"),
                 "run_scoped_receipt_hash": digest,
                 "wrapper_receipt_hash_matches": wrapper_hash_ready,
+                "wrapper_receipt_row_ready": wrapper_receipt_row_ready,
                 "counts": counts,
                 "counts_ready": counts_ready,
                 "executable_probes_ready": probes_ready,
@@ -317,13 +771,48 @@ def check_receipts(work: Path, wrapper_provenance: dict[str, Any]) -> tuple[dict
         for row in rows
     )
     false_pass = sum(not row["ready"] for row in rows)
+    identity_closure_ready = (
+        len(result_paths) == EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT
+        and raw_result_id_count == EXPECTED_RAW_CASE_EXECUTION_ID_COUNT
+        and len(case_ids) == EXPECTED_RAW_CASE_EXECUTION_ID_COUNT
+        and len(case_execution_identities) == EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT
+        and verified_stop_count == EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT
+        and not inventory_errors
+        and not duplicate_identities
+        and not synthetic_identities
+        and not wrapper_mismatches
+        and not wrapper_synthetic_identities
+    )
     return (
         {
             "current_case_result_count": len(result_paths),
+            "expected_current_case_result_count": EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT,
+            "current_case_raw_result_id_count": raw_result_id_count,
+            "current_case_raw_execution_id_count": len(case_ids),
+            "expected_current_case_raw_execution_id_count": EXPECTED_RAW_CASE_EXECUTION_ID_COUNT,
             "current_case_unique_execution_id_count": len(case_ids),
+            "current_case_authoritative_execution_identity_count": sum(
+                bool(row["execution_identity"]) for row in case_rows
+            ),
             "current_case_unique_execution_identity_count": len(case_execution_identities),
-            "preexecution_stop_case_count": sum(row["preexecution_stop"] for row in case_rows),
+            "expected_current_case_authoritative_execution_identity_count": (
+                EXPECTED_AUTHORITATIVE_CASE_IDENTITY_COUNT
+            ),
+            "preexecution_stop_case_count": verified_stop_count,
+            "verified_preexecution_stop_count": verified_stop_count,
+            "expected_verified_preexecution_stop_count": (
+                EXPECTED_VERIFIED_PREEXECUTION_STOP_COUNT
+            ),
+            "duplicate_case_execution_identity_count": len(duplicate_identities),
+            "duplicate_case_execution_identities": duplicate_identities,
+            "synthetic_case_execution_identity_count": len(synthetic_identities),
+            "synthetic_case_execution_identities": synthetic_identities,
+            "case_inventory_errors": inventory_errors,
             "case_inventory": case_rows,
+            "identity_closure_ready": identity_closure_ready,
+            "wrapper_identity_provenance_matches": not wrapper_mismatches,
+            "wrapper_identity_provenance_mismatches": wrapper_mismatches,
+            "wrapper_synthetic_case_execution_identities": wrapper_synthetic_identities,
             "current_run_receipt_count": len(rows),
             "expected_current_run_receipt_count": EXPECTED_CURRENT_RUN_RECEIPT_COUNT,
             "excluded_receipts": excluded,
@@ -358,7 +847,30 @@ def check_one(label: str, work: Path, result_path: Path, evidence: Path) -> tupl
             f"RUN_{label.upper()}_TIMEOUT_NOT_{EXPECTED_CHILD_TIMEOUT_SECONDS}"
         )
 
-    legacy = optimized.get("legacy_execution", {})
+    wrapper_legacy = optimized.get("legacy_execution", {})
+    legacy = wrapper_legacy if isinstance(wrapper_legacy, dict) else {}
+    if not isinstance(wrapper_legacy, dict):
+        failures.append(f"RUN_{label.upper()}_WRAPPER_LEGACY_EXECUTION_NOT_A_MAPPING")
+    legacy_artifact_path = evidence / f"run-{label}/legacy-r2-execution.yaml"
+    if not legacy_artifact_path.is_file():
+        failures.append(f"RUN_{label.upper()}_INDEPENDENT_LEGACY_EXECUTION_MISSING")
+    else:
+        try:
+            legacy_document = load_yaml(legacy_artifact_path)
+            if not isinstance(legacy_document, dict) or set(legacy_document) != {
+                "r2_portable_execution"
+            }:
+                raise ValueError("unexpected legacy execution root")
+            candidate_legacy = legacy_document.get("r2_portable_execution")
+            if not isinstance(candidate_legacy, dict):
+                raise TypeError("r2_portable_execution must be a mapping")
+            if candidate_legacy != legacy:
+                failures.append(f"RUN_{label.upper()}_WRAPPER_LEGACY_EXECUTION_MISMATCH")
+        except Exception as exc:
+            failures.append(
+                f"RUN_{label.upper()}_INDEPENDENT_LEGACY_EXECUTION_PARSE_ERROR:"
+                f"{type(exc).__name__}"
+            )
     if legacy.get("R2_EXECUTION_READY") is not True:
         failures.append(f"RUN_{label.upper()}_LEGACY_EXECUTION_NOT_READY")
     mutation = legacy.get("mutation", {})
@@ -415,7 +927,11 @@ def check_one(label: str, work: Path, result_path: Path, evidence: Path) -> tupl
     if set(artifact_rows) != {"before_state", "after_state", "gap_registry", "candidate_ir", "repair_receipt", "workpaper"}:
         failures.append(f"RUN_{label.upper()}_C01_ARTIFACT_SET_INCOMPLETE")
 
-    provenance, receipt_failures = check_receipts(work, optimized.get("audit_provenance", {}))
+    provenance, receipt_failures = check_receipts(
+        work,
+        legacy,
+        optimized.get("audit_provenance", {}),
+    )
     failures.extend(f"RUN_{label.upper()}_{failure}" for failure in receipt_failures)
     projection, semantic_hash, semantic_failures = canonical_projection(work, independent_gates, run_id)
     failures.extend(f"RUN_{label.upper()}_{failure}" for failure in semantic_failures)
